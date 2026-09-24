@@ -25,6 +25,7 @@ from pathlib import Path
 
 # FL Studio API modules (available when running inside FL Studio)
 import channels
+import midi
 import mixer
 import plugins
 import transport
@@ -792,14 +793,18 @@ def handle_plugins_set_param_value(params: dict) -> dict:
     slot_index = params.get("slot_index", -1)
     use_global = params.get("use_global", True)
 
+    # setParamValue's 5th argument is pickupMode, NOT useGlobalIndex:
+    # setParamValue(value, paramIndex, index, slotIndex, pickupMode, useGlobalIndex).
+    # Passing True there enables pickup mode and the value is silently ignored.
+    pim_none = midi.PIM_None
     if slot_index >= 0:
         name = plugins.getParamName(param_index, plugin_index, slot_index, True)
-        plugins.setParamValue(value, param_index, plugin_index, slot_index, True)
+        plugins.setParamValue(value, param_index, plugin_index, slot_index, pim_none, True)
         new_value = plugins.getParamValue(param_index, plugin_index, slot_index, True)
         value_str = plugins.getParamValueString(param_index, plugin_index, slot_index, True)
     else:
         name = plugins.getParamName(param_index, plugin_index, -1, use_global)
-        plugins.setParamValue(value, param_index, plugin_index, -1, use_global)
+        plugins.setParamValue(value, param_index, plugin_index, -1, pim_none, use_global)
         new_value = plugins.getParamValue(param_index, plugin_index, -1, use_global)
         value_str = plugins.getParamValueString(param_index, plugin_index, -1, use_global)
 
