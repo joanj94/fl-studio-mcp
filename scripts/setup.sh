@@ -166,10 +166,10 @@ if [[ "$OS" == "mac" ]]; then
 else
     echo "   - Under 'Input', find your loopMIDI port"
 fi
-echo "   - Set the controller type to: ${GREEN}FLStudioMCP${NC}"
+echo "   - Set the controller type to: ${GREEN}FL Studio MCP Controller${NC}"
 echo "   - Enable the port (click to highlight)"
 echo ""
-echo "3. For Piano Roll features, first run in FL Studio:"
+echo "3. For Piano Roll features, open a piano roll and from ITS menu (top-left arrow) run:"
 echo "   ${GREEN}Tools > Scripting > ComposeWithLLM${NC}"
 echo ""
 echo "4. Start the MCP server:"

@@ -91,20 +91,18 @@ def test_response_write_leaves_no_temp_file(controller):
     assert sorted(leftovers) == ["mcp_command.json", "mcp_response.json"]
 
 
-def test_response_write_retries_while_server_is_reading(controller, monkeypatch):
-    real_replace = controller.os.replace
-    failures = iter([True, True])
+def test_response_write_never_renames(controller, monkeypatch):
+    # FL Studio 2026's os.replace returns NULL without an exception and leaves the
+    # embedded interpreter broken for every later call (seen live), so never call it.
+    calls = []
+    monkeypatch.setattr(controller.os, "replace", lambda *args: calls.append(args))
+    monkeypatch.setattr(controller.os, "remove", lambda *args: calls.append(args))
+    monkeypatch.setattr(controller.os, "unlink", lambda *args: calls.append(args))
 
-    def flaky_replace(src, dst):
-        if next(failures, False):
-            raise PermissionError(13, "Access is denied")
-        real_replace(src, dst)
+    response = _run(controller, {"id": "fl", "action": "transport.getLength"})
 
-    monkeypatch.setattr(controller.os, "replace", flaky_replace)
-
-    response = _run(controller, {"id": "r", "action": "transport.getLength"})
-
-    assert response["id"] == "r"
+    assert response["id"] == "fl"
+    assert calls == []
 
 
 def test_trigger_note_executes_command(controller):

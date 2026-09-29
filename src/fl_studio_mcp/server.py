@@ -13,7 +13,7 @@ Requirements:
 
 Limitations:
 - Cannot load new plugins (only control existing ones)
-- Cannot create new patterns programmatically
+- Cannot place pattern clips in the playlist or create automation
 """
 
 from __future__ import annotations
@@ -24,8 +24,10 @@ from fl_studio_mcp.tools import (
     register_channel_tools,
     register_mixer_tools,
     register_music_tools,
+    register_pattern_tools,
     register_piano_roll_tools,
     register_plugin_tools,
+    register_project_tools,
     register_transport_tools,
 )
 from fl_studio_mcp.utils.connection import get_connection, reset_connection
@@ -37,14 +39,20 @@ mcp = FastMCP(
 FL Studio MCP Server - Control FL Studio from AI assistants.
 
 This server provides tools to control FL Studio through its Python scripting API.
-FL Studio must be running with the FLStudioMCP MIDI controller enabled.
+FL Studio must be running with the "FL Studio MCP Controller" MIDI script enabled.
+Start with fl_get_project_overview to see tempo, patterns and channels.
 
 Available tool categories:
-- Transport: Play, stop, record, tempo, position control
+- Project: Overview, tempo (fl_get_project_overview, fl_set_tempo)
+- Patterns: List, select (an unused index creates the pattern), rename, find empty
+- Transport: Play, stop, record, position control
 - Mixer: Volume, pan, mute, solo, track management
-- Channels: Channel info, note triggering, step sequencer
+- Channels: Channel info, note triggering, step sequencer incl. per-step pitch,
+  velocity and pan (fl_set_step_params)
 - Plugins: Parameter control, preset navigation (cannot load new plugins)
-- Piano roll: Write, delete and read persistent notes (fl_send_notes, ...)
+- Piano roll: Write, delete and read persistent notes (fl_send_notes, ...). Pass
+  channel/pattern to aim at a roll; notes may carry pan, slide, porta, fine_pitch
+  (cents) and more.
 - Music (music_*): Build notes from scales, chords, roman numerals, scale degrees,
   rhythm grids and rolls, and transform them (arpeggiate, transpose, humanize, ...).
   These don't touch FL Studio; their output goes straight into fl_send_notes.
@@ -52,7 +60,7 @@ Available tool categories:
 
 Important limitations:
 1. Cannot load new VST/AU plugins - only control existing ones
-2. Cannot create new patterns programmatically
+2. Cannot place pattern clips in the playlist or create automation
 3. Note triggering (fl_trigger_note) is real-time only - notes won't persist
    unless FL Studio is recording. Use step sequencer (fl_set_grid_bit) for
    persistent drum patterns.
@@ -147,6 +155,8 @@ register_channel_tools(mcp)
 register_plugin_tools(mcp)
 register_piano_roll_tools(mcp)
 register_music_tools(mcp)
+register_project_tools(mcp)
+register_pattern_tools(mcp)
 
 
 def main():

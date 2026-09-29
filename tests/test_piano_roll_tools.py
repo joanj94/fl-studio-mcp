@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 from fl_studio_mcp.tools import piano_roll
-from tests.fakes import ToolCollector
+from fl_studio_mcp.utils import connection
+from tests.fakes import ScriptedConnection, ToolCollector
 
 
 def _scripts_dir(settings_dir: Path) -> Path:
@@ -229,6 +230,107 @@ def test_unsupported_platform(tools, monkeypatch):
     monkeypatch.setattr(piano_roll, "get_trigger", lambda: unsupported)
 
     assert "not supported" in tools["fl_trigger_script"]()
+
+
+# --- targeting a channel/pattern, note fields, fresh reads ---------------------
+
+
+@pytest.fixture
+def fl_conn(monkeypatch) -> ScriptedConnection:
+    conn = ScriptedConnection()
+    monkeypatch.setattr(connection, "get_connection", lambda: conn)
+    return conn
+
+
+NOTE = {"midi": 60, "duration": 1}
+
+
+def test_send_notes_selects_channel_then_pattern_before_queueing(tools, settings_dir, fl_conn):
+    tools["fl_send_notes"]([NOTE], channel=4, pattern=2, auto_trigger=False)
+
+    assert fl_conn.sent == [("channels.selectOne", {"index": 4}), ("patterns.select", {"index": 2})]
+    assert _queued(settings_dir)[0]["action"] == "add_notes"
+
+
+def test_bad_channel_leaves_the_pattern_alone(tools, settings_dir, fl_conn):
+    fl_conn.results["channels.selectOne"] = {"error": "no channel 99"}
+
+    result = tools["fl_send_notes"]([NOTE], channel=99, pattern=5, auto_trigger=False)
+
+    assert "no channel 99" in result
+    assert fl_conn.sent == [("channels.selectOne", {"index": 99})]
+
+
+def test_without_target_nothing_is_selected(tools, settings_dir, fl_conn):
+    tools["fl_send_notes"]([NOTE], auto_trigger=False)
+
+    assert fl_conn.sent == []
+
+
+def test_failed_target_selection_queues_nothing(tools, settings_dir, fl_conn):
+    fl_conn.results["channels.selectOne"] = {"error": "no channel 9"}
+
+    result = tools["fl_send_notes"]([NOTE], channel=9, auto_trigger=False)
+
+    assert "no channel 9" in result
+    assert not (_scripts_dir(settings_dir) / "mcp_request.json").exists()
+
+
+@pytest.mark.parametrize("tool, args", [
+    ("fl_send_chord", {"midi_notes": [60, 64]}),
+    ("fl_delete_notes", {"notes": [{"midi": 60, "time": 0}]}),
+    ("fl_clear_piano_roll", {}),
+])
+def test_other_note_tools_accept_a_target(tools, settings_dir, fl_conn, tool, args):
+    tools[tool](**args, channel=1, auto_trigger=False)
+
+    assert fl_conn.sent == [("channels.selectOne", {"index": 1})]
+
+
+def test_send_notes_passes_note_properties_and_converts_fine_pitch(tools, settings_dir):
+    note = {"midi": 60, "duration": 1, "pan": 0.2, "slide": True, "porta": False,
+            "fine_pitch": -50, "muted": True, "note_name": "C4", "time_ticks": 0}
+
+    tools["fl_send_notes"]([note], auto_trigger=False)
+
+    (queued,) = _queued(settings_dir)[0]["notes"]
+    assert queued == {"midi": 60, "duration": 1, "time": 0, "velocity": 0.8, "pan": 0.2,
+                      "slide": True, "porta": False, "pitchofs": -5, "muted": True}
+
+
+@pytest.mark.parametrize("note", [
+    {"midi": 60, "duration": 1, "fine_pitch": 1300},
+    {"midi": 60, "duration": 1, "pan": 1.5},
+    {"midi": 60, "duration": 1, "slide": "yes"},
+])
+def test_send_notes_rejects_invalid_note_properties(tools, settings_dir, note):
+    assert "Error" in tools["fl_send_notes"]([note], auto_trigger=False)
+
+
+def test_get_state_of_a_target_reads_fresh_state(tools, settings_dir, fl_conn, monkeypatch):
+    def fl_runs_script() -> None:
+        ids = [r["id"] for r in _queued(settings_dir)]
+        scripts = _scripts_dir(settings_dir)
+        (scripts / "piano_roll_state.json").write_text(
+            json.dumps({"ppq": 96, "noteCount": 1, "notes": [{"midi": 69}]})
+        )
+        (scripts / "mcp_response.json").write_text(
+            json.dumps({"status": "success", "request_ids": ids})
+        )
+
+    monkeypatch.setattr(piano_roll, "get_trigger", lambda: FakeTrigger(fl_runs_script))
+
+    state = tools["fl_get_piano_roll_state"](channel=4)
+
+    assert fl_conn.sent == [("channels.selectOne", {"index": 4})]
+    assert state["notes"][0]["note_name"] == "A4"
+
+
+def test_get_state_reports_when_fl_does_not_answer(tools, settings_dir, fl_conn, monkeypatch):
+    monkeypatch.setattr(piano_roll, "get_trigger", lambda: FakeTrigger())
+    monkeypatch.setattr(piano_roll, "RESPONSE_TIMEOUT", 0.05)
+
+    assert "did not respond" in tools["fl_get_piano_roll_state"](refresh=True)["error"]
 
 
 def test_piano_roll_info(tools, settings_dir):

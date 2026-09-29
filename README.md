@@ -4,9 +4,15 @@ An MCP (Model Context Protocol) server that lets AI assistants control FL Studio
 
 This is a fork of [karl-andres/fl-studio-mcp](https://github.com/karl-andres/fl-studio-mcp). The goal is a **genre-agnostic toolkit** that any MCP-compatible AI can use to write any melody or style in FL Studio. The server provides precise, musically-expressed building blocks, and the AI makes the musical decisions. Hardcore/hardstyle is the first style used to test it; no genre logic lives in the server code.
 
-> **Status:** early development. The foundation (reliable communication, tests) is done; the music toolkit and extra FL control are in progress. See [Roadmap](#roadmap).
+> **Status:** early development. The foundation, the music toolkit and the extra FL control (tempo, patterns, targeted notes) are done; instrument roles and style packs are next. See [Roadmap](#roadmap).
 
 ## Features
+
+### Project and Patterns
+
+- One-call project overview: tempo, PPQ, time signature, patterns, channels, mixer track count, loop mode
+- Get/set tempo (decimals allowed)
+- List, select, rename patterns and find an empty one (selecting an unused pattern number creates it)
 
 ### Transport Control
 
@@ -33,6 +39,7 @@ This is a fork of [karl-andres/fl-studio-mcp](https://github.com/karl-andres/fl-
 - Route channels to mixer tracks
 - Trigger MIDI notes in real-time
 - Step sequencer control (get/set grid bits)
+- Per-step parameters: pitch, velocity, release, fine pitch, pan, mod X/Y and shift, in any pattern
 
 ### Plugin Control
 
@@ -47,7 +54,9 @@ This is a fork of [karl-andres/fl-studio-mcp](https://github.com/karl-andres/fl-
 - **Add chords** with a single command
 - **Delete specific notes** by MIDI number and time
 - **Clear all notes** from the piano roll
-- **Read piano roll state** to see all existing notes
+- **Read piano roll state** to see all existing notes (fresh from FL, not a stale export)
+- **Target any channel and pattern**: every note tool takes optional `channel` and `pattern`
+- **Full note properties**: velocity, release, pan, slide, porta, muted, colour, filter cutoff/resonance and `fine_pitch` in cents
 - Auto-triggering via keystroke (Cmd+Opt+Y on macOS, Ctrl+Alt+Y on Windows), with confirmation from FL Studio of what was applied
 
 ### Music Toolkit
@@ -66,18 +75,20 @@ Pitch names use scientific notation, where **C4 = MIDI 60**. FL Studio's piano r
 
 Compared with upstream, this fork currently adds:
 
-- **Reliable command/response protocol:** every command carries a unique id that FL echoes back, so a late or stale response is never mistaken for the current one. All shared JSON files are written atomically and retried if the other side has the file open (Windows).
+- **Reliable command/response protocol:** every command carries a unique id that FL echoes back, so a late or stale response is never mistaken for the current one. The server writes its JSON files atomically (retried if FL has the file open), and skips half-written responses from FL.
 - **Correct error reporting:** unknown actions and FL-side errors are now reported as failures; before, they came back as `success: true`.
 - **Piano roll confirmation:** piano roll tools wait for FL Studio to confirm which requests it processed and report notes added/deleted (or FL's error message), instead of sleeping a fixed 2 seconds and assuming success. A failing batch is dropped rather than replayed on every later trigger.
 - **Safe MIDI port selection:** the server never falls back to an arbitrary MIDI port (which could be a hardware synth); set `FL_MCP_MIDI_PORT` to choose one explicitly.
 - **OneDrive-aware paths:** the real Windows Documents folder is used everywhere (server, FL-side scripts, installer), so redirected Documents folders work.
+- **FL Studio 2026 support:** the FL-side scripts no longer use `os.replace`, which breaks FL 2026's embedded Python.
+- **More FL control:** tempo, project overview, patterns, per-step parameters, and piano roll notes aimed at a chosen channel and pattern with full note properties.
 - **Test suite:** pytest with the FL Studio API faked, so it runs without FL Studio. It includes a contract test that checks every tool against the FL-side controller script.
 
 ## Roadmap
 
 1. **Foundation**: reliable protocol, tests, port and path handling. ✅
 2. **Generic music toolkit** (pure Python): notes in musical units, scales and modes, chord symbols and roman numerals, scale-degree melodies, rhythm grids and Euclidean rhythms, rolls, transforms (arpeggiate, transpose, quantize, swing, humanize, ...). ✅
-3. **More FL control**: tempo and time signature, pattern selection, writing notes into a specific channel and pattern, and full note properties (slide, porta, pan, fine pitch).
+3. **More FL control**: tempo, project overview, pattern selection, per-step parameters, writing notes into a specific channel and pattern, and full note properties (slide, porta, pan, fine pitch). ✅
 4. **Roles and templates**: refer to instruments by role (`"kick"`, `"lead"`, …) instead of channel numbers, based on a template project you prepare.
 5. **Style packs**: optional data and prompt files describing a genre (tempo range, structure, idioms); hardstyle and hardcore first, plus one very different genre to keep the core generic.
 6. **Render and analysis** (optional): render via FL's command line and give the AI feedback on loudness, spectrum and key.
@@ -87,7 +98,8 @@ Compared with upstream, this fork currently adds:
 These come from FL Studio's scripting API, not from this server:
 
 - **Cannot load plugins.** You can only control parameters of plugins already loaded in your project, so start from a template project that contains the instruments you want.
-- **Cannot create patterns or place clips in the playlist.** Work within existing patterns.
+- **Cannot place pattern clips in the playlist or create automation.** Patterns can be created (by selecting an unused number) and filled, but arranging them in the playlist is up to you.
+- **Time signature is read-only.** The overview reports it; set it in FL Studio yourself.
 - **Real-time notes aren't saved.** `fl_trigger_note` plays a note live; it only ends up in the project if FL Studio is recording. Use the piano roll or step sequencer tools to write notes permanently.
 
 ## Requirements
@@ -167,9 +179,9 @@ pip install -e .
 
 #### Windows (loopMIDI)
 
-1. Download and install [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html)
-2. Create a virtual port (any name works)
-3. Keep loopMIDI running while using FL Studio
+1. Install [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html), from the website or with `winget install TobiasErichsen.loopMIDI`
+2. Open loopMIDI and click **+** to create a port. The default name `loopMIDI Port` works; the server finds any port with `loopMIDI` in its name
+3. Keep loopMIDI running while using FL Studio (it can start with Windows from its tray icon)
 
 #### macOS (IAC Driver)
 
@@ -208,11 +220,15 @@ After pulling changes to either script, copy it again and restart FL Studio (or 
 
 ### 4. Configure FL Studio
 
-1. **Restart FL Studio** (if it's running)
+1. **Restart FL Studio** (if it's running) so it finds the new controller script
 2. Go to **Options > MIDI Settings**
-3. Under **Input**, find your virtual MIDI port (e.g. "loopMIDI Port" or "IAC Driver Bus 1")
-4. Set the **Controller type** to **FLStudioMCP**
-5. Enable the port (click to highlight it)
+3. Under **Input**, select your virtual MIDI port (e.g. "loopMIDI Port" or "IAC Driver Bus 1")
+4. Set **Controller type** to **FL Studio MCP Controller** (listed under *Scripts*)
+5. Make sure **Enable** is lit for that port
+
+The port only needs to be enabled under **Input**. Leave it alone under **Output**: the server sends to FL Studio, never the other way.
+
+For the piano roll tools, also open a pattern's piano roll and run **Tools > Scripting > ComposeWithLLM** from the piano roll window's own menu once per FL session (see [Piano Roll Workflow](#piano-roll-workflow)).
 
 ### 5. Configure Your MCP Client
 
@@ -252,8 +268,9 @@ uv run fl-studio-mcp
 
 1. Open FL Studio and select a channel
 2. Open the Piano Roll (F7 or double-click the channel)
-3. The first time in each FL session, run the script manually: **Tools > Scripting > ComposeWithLLM**
+3. The first time in each FL session, run the script manually from the **piano roll's own menu** (the ▸ arrow in the piano roll window's top-left corner): **Tools > Scripting > ComposeWithLLM**. FL's main Tools menu in the top bar is a different menu and doesn't list piano roll scripts
 4. After that, the MCP tools trigger the script automatically and report what FL Studio applied
+5. The script writes to the **selected** channel's piano roll in the **selected** pattern. Pass `channel` and `pattern` to the note tools and they select both first
 
 ## Available Tools
 
@@ -263,6 +280,23 @@ uv run fl-studio-mcp
 |------|-------------|
 | `fl_connect` | Connect/reconnect to FL Studio |
 | `fl_connection_status` | Get connection status and available MIDI ports |
+
+### Project
+
+| Tool | Description |
+|------|-------------|
+| `fl_get_project_overview` | Tempo, PPQ, time signature, patterns, channels, mixer track count, loop mode |
+| `fl_get_tempo` | Get tempo in BPM |
+| `fl_set_tempo` | Set tempo (10-522 BPM, decimals allowed) |
+
+### Patterns
+
+| Tool | Description |
+|------|-------------|
+| `fl_get_patterns` | List used patterns and the current one |
+| `fl_select_pattern` | Select a pattern (an unused number creates it) |
+| `fl_rename_pattern` | Rename a pattern (current one by default) |
+| `fl_find_empty_pattern` | Lowest unused pattern number |
 
 ### Transport
 
@@ -315,6 +349,8 @@ uv run fl-studio-mcp
 | `fl_set_grid_bit` | Set step sequencer step |
 | `fl_get_step_sequence` | Get full pattern |
 | `fl_set_step_sequence` | Set full pattern |
+| `fl_set_step_params` | Turn steps on/off and set pitch, velocity, release, fine pitch, pan, mod X/Y, shift (optionally in a given pattern) |
+| `fl_get_step_params` | Read steps back with their parameters |
 
 ### Plugins
 
@@ -339,7 +375,9 @@ uv run fl-studio-mcp
 | `fl_send_chord` | Add a chord (multiple notes at same time) |
 | `fl_delete_notes` | Delete specific notes |
 | `fl_clear_piano_roll` | Clear all notes |
-| `fl_get_piano_roll_state` | Read current piano roll notes |
+| `fl_get_piano_roll_state` | Read the piano roll's notes, fresh from FL |
+
+These five take optional `channel` and `pattern`. Notes can carry `velocity`, `release`, `pan`, `fcut`, `fres` (all 0.0-1.0), `slide`, `porta`, `muted`, `color` and `fine_pitch` (cents, ±1200; read back as `pitchofs` in tens of cents).
 | `fl_trigger_script` | Manually trigger the FL Studio script for queued requests |
 | `fl_get_piano_roll_info` | Get piano roll system info |
 | `fl_clear_request_queue` | Cancel pending queued changes |
@@ -366,6 +404,8 @@ uv run fl-studio-mcp
 "List the parameters of the plugin on channel 0 and set the filter cutoff to 50%"
 "Write an F minor i-VI-III-VII progression, arpeggiate it in 16ths up and down over two octaves, and put it in the piano roll"
 "Add a snare roll over the last 2 bars that goes 8ths, 16ths, 32nds and gets louder"
+"Set the tempo to 150, find an empty pattern, call it 'Intro' and put a bassline on channel 3 there"
+"Write a 16-step hi-hat pattern on channel 2 with accents on the off-beats and the 4th step panned left"
 ```
 
 ## Troubleshooting
@@ -375,7 +415,7 @@ uv run fl-studio-mcp
 1. Make sure loopMIDI is running (Windows) or the IAC Driver is enabled (macOS)
 2. Run `fl_connection_status` to see which MIDI ports the server can see
 3. The server only auto-selects ports named like `loopMIDI`, `IAC` or `FL`. If yours is named differently, set `FL_MCP_MIDI_PORT`
-4. Check that the FLStudioMCP controller is enabled in FL's MIDI Settings, and restart FL Studio after enabling it
+4. Check that the **FL Studio MCP Controller** is set on that port under **Input** in FL's MIDI Settings, and restart FL Studio after enabling it
 
 ### "Timeout waiting for FL Studio response"
 
@@ -386,7 +426,7 @@ uv run fl-studio-mcp
 ### Piano roll: "FL Studio did not respond"
 
 1. A piano roll must be open in FL Studio
-2. Run **Tools > Scripting > ComposeWithLLM** manually once per FL session
+2. Run **Tools > Scripting > ComposeWithLLM** manually once per FL session, from the piano roll window's menu (not FL's main Tools menu)
 3. Press `Ctrl+Alt+Y` (Windows) or `Cmd+Opt+Y` (macOS) yourself to check the hotkey runs the script; the requests stay queued until then
 4. Make sure the installed `ComposeWithLLM.pyscript` is up to date (same reason as above)
 5. On Windows, FL Studio must not be minimized to the system tray; on macOS, grant Accessibility permissions when prompted
@@ -429,7 +469,7 @@ uv run fl-studio-mcp
    - It sends a keystroke (Ctrl+Alt+Y on Windows, Cmd+Opt+Y on macOS) to run FL's piano roll script. On Windows, the FL Studio window is brought to the front first
    - The piano roll script applies the requests and writes a response listing the ids it processed, which the server waits for
 
-All shared JSON files are written atomically (temp file + rename, retried if the file is briefly locked), so neither side reads a half-written file.
+The server writes its JSON files atomically (temp file + rename, retried if the file is briefly locked). The FL-side scripts write in place, because `os.replace` is broken in FL Studio 2026's embedded Python (it breaks the interpreter for every later call). The server is safe against that: it ignores responses it can't parse yet and only accepts one carrying its own request id.
 
 ## Development
 

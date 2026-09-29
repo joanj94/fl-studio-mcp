@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from fl_studio_mcp.utils.connection import call
+from fl_studio_mcp.utils.step_params import step_from_fl, step_to_fl
+
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
@@ -406,3 +409,47 @@ def register_channel_tools(mcp: FastMCP) -> None:
         return (
             f"Channel '{channel_name}' pattern set with {active_steps}/{total_steps} steps active"
         )
+
+    @mcp.tool()
+    def fl_set_step_params(channel: int, steps: list[dict], pattern: int | None = None) -> dict:
+        """Program step sequencer steps with per-step pitch, velocity, pan and more.
+
+        Only the fields you give are changed. Each step dict:
+            step (required): step index, 0-based (16 steps = 1 bar of 16ths in 4/4)
+            on: true/false to switch the step on or off
+            pitch: MIDI number or note name ("C4" = 60)
+            velocity, release, mod_x, mod_y: 0.0-1.0
+            pan: -1.0 (left) to 1.0 (right)
+            fine_pitch: detune in cents, -1200 to 1200
+            shift: delay in ticks (see ppq in fl_get_project_overview; one step = ppq/4)
+
+        Args:
+            channel: Channel index (global, 0-based).
+            steps: Steps to change, e.g. [{"step": 0, "on": true, "pitch": "C3",
+                "velocity": 1.0}, {"step": 4, "on": true, "velocity": 0.6}].
+            pattern: Pattern to edit (1-based); it becomes the active pattern.
+                Default: the active pattern.
+        """
+        try:
+            raw_steps = [step_to_fl(step) for step in steps]
+        except ValueError as e:
+            return {"error": str(e)}
+        params = {"channel": channel, "steps": raw_steps}
+        if pattern is not None:
+            params["pattern"] = pattern
+        return call("channels.setStepParams", params)
+
+    @mcp.tool()
+    def fl_get_step_params(channel: int, steps: int = 16) -> dict:
+        """Read step sequencer steps of the active pattern, with parameters of active steps.
+
+        Values use the same units as fl_set_step_params.
+
+        Args:
+            channel: Channel index (global, 0-based).
+            steps: How many steps to read from the start of the pattern.
+        """
+        result = call("channels.getStepParams", {"channel": channel, "steps": steps})
+        if "error" in result:
+            return result
+        return {**result, "steps": [step_from_fl(step) for step in result.get("steps", [])]}
