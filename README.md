@@ -4,7 +4,7 @@ An MCP (Model Context Protocol) server that lets AI assistants control FL Studio
 
 This is a fork of [karl-andres/fl-studio-mcp](https://github.com/karl-andres/fl-studio-mcp). The goal is a **genre-agnostic toolkit** that any MCP-compatible AI can use to write any melody or style in FL Studio. The server provides precise, musically-expressed building blocks, and the AI makes the musical decisions. Hardcore/hardstyle is the first style used to test it; no genre logic lives in the server code.
 
-> **Status:** early development. The foundation, the music toolkit and the extra FL control (tempo, patterns, targeted notes) are done; instrument roles and style packs are next. See [Roadmap](#roadmap).
+> **Status:** early development. The foundation, music toolkit, FL control (tempo, patterns, targeted notes), roles and style packs are done; render and analysis is next. See [Roadmap](#roadmap).
 
 ## Features
 
@@ -13,6 +13,12 @@ This is a fork of [karl-andres/fl-studio-mcp](https://github.com/karl-andres/fl-
 - One-call project overview: tempo, PPQ, time signature, patterns, channels, mixer track count, loop mode
 - Get/set tempo (decimals allowed)
 - List, select, rename patterns and find an empty one (selecting an unused pattern number creates it)
+
+### Style Packs
+
+- Optional JSON files describing a style in the toolkit's vocabulary: tempo range, scales, roles, song structure, rhythm grids, chord progressions and guidance
+- Built in: hardstyle, hardcore and lo-fi hip hop (a deliberately different style, to keep the core generic); add your own in a folder of your choice
+- Check whether the open project fits a style (tempo in range, required roles present)
 
 ### Roles
 
@@ -96,7 +102,7 @@ Compared with upstream, this fork currently adds:
 2. **Generic music toolkit** (pure Python): notes in musical units, scales and modes, chord symbols and roman numerals, scale-degree melodies, rhythm grids and Euclidean rhythms, rolls, transforms (arpeggiate, transpose, quantize, swing, humanize, ...). ✅
 3. **More FL control**: tempo, project overview, pattern selection, per-step parameters, writing notes into a specific channel and pattern, and full note properties (slide, porta, pan, fine pitch). ✅
 4. **Roles and templates**: refer to instruments by role (`"kick"`, `"lead"`, …) instead of channel numbers, based on a template project you prepare. ✅
-5. **Style packs**: optional data and prompt files describing a genre (tempo range, structure, idioms); hardstyle and hardcore first, plus one very different genre to keep the core generic.
+5. **Style packs**: optional data files describing a genre (tempo range, structure, idioms); hardstyle, hardcore and lo-fi hip hop to start, the last one to keep the core generic. ✅
 6. **Render and analysis** (optional): render via FL's command line and give the AI feedback on loudness, spectrum and key.
 
 ## Important Limitations
@@ -260,6 +266,7 @@ Set these in the MCP server entry's `env` block if you need them:
 | Variable | Purpose |
 |----------|---------|
 | `FL_MCP_MIDI_PORT` | MIDI output port to use (exact name or case-insensitive substring). Without it, the server picks the first port whose name contains `loopMIDI`, `IAC` or `FL`, and refuses to guess otherwise. |
+| `FL_MCP_STYLES_DIR` | Folder with your own style packs (`*.json`). A pack with the same name as a built-in one replaces it. |
 | `FL_MCP_SETTINGS_DIR` | Full path to FL Studio's `Settings` folder, if you changed FL's user data folder. The default is `<Documents>\Image-Line\FL Studio\Settings`. |
 
 ## Usage
@@ -277,6 +284,24 @@ uv run fl-studio-mcp
 3. The first time in each FL session, run the script manually from the **piano roll's own menu** (the ▸ arrow in the piano roll window's top-left corner): **Tools > Scripting > ComposeWithLLM**. FL's main Tools menu in the top bar is a different menu and doesn't list piano roll scripts
 4. After that, the MCP tools trigger the script automatically and report what FL Studio applied
 5. The script edits the channel the piano roll window shows, in the current pattern. Pass `channel` (an index or a role) and `pattern` to the note tools and they switch the piano roll there first. You'll see the window briefly close and reopen
+
+### Style Packs
+
+A style pack is a JSON file in `src/fl_studio_mcp/styles/` (built in) or in the folder named by `FL_MCP_STYLES_DIR` (yours). The file name must match its `name`. Packs are starting points for the AI, not rules, and nothing about any style is hard-coded in the server. Fields:
+
+| Field | Content |
+|-------|---------|
+| `name`, `title`, `description` | Identifier (lowercase, `-` separated), display name, one-paragraph summary |
+| `tempo` | `min`, `max`, `typical` BPM |
+| `time_signature` | e.g. `"4/4"` |
+| `scales` | Scale names from `music_reference` |
+| `roles` | `required` and `optional` role names, matched against channel names like any role |
+| `structure` | Sections with `section`, `bars`, `description` |
+| `rhythms` | `name`, `role`, `grid` (music_rhythm grid syntax, 16 steps = one 4/4 bar of 16ths), `description` |
+| `progressions` | `chords` (roman numerals or chord symbols), `scale`, `description` |
+| `guidance` | List of plain-text tips |
+
+Every pack is checked when loaded: unknown scales, grids that don't parse, progressions that don't resolve or rhythms for undeclared roles are reported by `style_list` instead of reaching the AI. Edits apply on the next call; no restart needed.
 
 ### Preparing a Template Project
 
@@ -406,6 +431,14 @@ These five take optional `channel` (an index or a role) and `pattern`. Notes can
 | `fl_get_piano_roll_info` | Get piano roll system info |
 | `fl_clear_request_queue` | Cancel pending queued changes |
 
+### Styles
+
+| Tool | Description |
+|------|-------------|
+| `style_list` | Available style packs (and any that failed to load, with the reason) |
+| `style_get` | A full style pack |
+| `style_check_project` | Does the open project fit a style: tempo in range, required roles found |
+
 ### Music (no FL Studio needed)
 
 | Tool | Description |
@@ -430,6 +463,7 @@ These five take optional `channel` (an index or a role) and `pattern`. Notes can
 "Add a snare roll over the last 2 bars that goes 8ths, 16ths, 32nds and gets louder"
 "Set the tempo to 150, find an empty pattern, call it 'Intro' and put a bassline on channel 3 there"
 "Check the project has a kick, a bass and a lead, then write a 4-bar bassline on the bass"
+"Using the hardstyle style pack, check my project and write a 16-bar climax: kick on every beat tuned to F, and a lead melody on the lead channel"
 "Write a 16-step hi-hat pattern on channel 2 with accents on the off-beats and the 4th step panned left"
 ```
 

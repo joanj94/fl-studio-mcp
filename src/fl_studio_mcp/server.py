@@ -29,6 +29,7 @@ from fl_studio_mcp.tools import (
     register_plugin_tools,
     register_project_tools,
     register_roles_tools,
+    register_style_tools,
     register_transport_tools,
 )
 from fl_studio_mcp.utils.connection import get_connection, reset_connection
@@ -50,6 +51,9 @@ Available tool categories:
 - Project: Overview, tempo (fl_get_project_overview, fl_set_tempo)
 - Patterns: List, select (an unused index creates the pattern), rename, find empty
 - Roles: fl_get_roles, fl_check_roles
+- Styles (style_*): optional style packs with tempo range, scales, roles, song
+  structure, rhythm grids, progressions and guidance. style_list, style_get,
+  style_check_project. Treat them as starting points; the user's ideas win.
 - Transport: Play, stop, record, position control
 - Mixer: Volume, pan, mute, solo, track management
 - Channels: Channel info, note triggering, step sequencer incl. per-step pitch,
@@ -163,6 +167,7 @@ register_music_tools(mcp)
 register_project_tools(mcp)
 register_pattern_tools(mcp)
 register_roles_tools(mcp)
+register_style_tools(mcp)
 
 
 def main():

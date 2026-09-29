@@ -1,0 +1,45 @@
+{
+  "name": "hardstyle",
+  "title": "Hardstyle",
+  "description": "Four-on-the-floor dance music built around a distorted, pitched kick, with big minor-key lead melodies (euphoric) or darker screech-driven drops (raw).",
+  "tempo": {"min": 145, "max": 160, "typical": 150},
+  "time_signature": "4/4",
+  "scales": ["minor", "harmonic_minor", "phrygian"],
+  "roles": {
+    "required": ["kick", "lead"],
+    "optional": ["bass", "clap", "hihat", "snare", "screech", "pad", "fx"]
+  },
+  "structure": [
+    {"section": "intro", "bars": 32, "description": "DJ-friendly: kick, hi-hats and percussion; hint the lead or a filtered motif in the second half."},
+    {"section": "break", "bars": 16, "description": "Kick drops out; pads or a piano introduce the chord progression."},
+    {"section": "breakdown", "bars": 32, "description": "The melody in full over the chords, often with a vocal; no kick."},
+    {"section": "build-up", "bars": 8, "description": "Snare or kick roll speeding up, rising filter and pitch; a short gap (one beat to one bar) before the drop."},
+    {"section": "climax", "bars": 32, "description": "Kick back on every beat under the main lead melody; in raw styles an anti-climax of rhythmic screeches over the kick."},
+    {"section": "mid-break", "bars": 16, "description": "Short breather reusing the breakdown melody."},
+    {"section": "build-up 2", "bars": 8, "description": "Shorter, more intense build than the first."},
+    {"section": "climax 2", "bars": 32, "description": "Main melody again, often with variations or an extra layer."},
+    {"section": "outro", "bars": 32, "description": "Kick and percussion only, for mixing out."}
+  ],
+  "rhythms": [
+    {"name": "four on the floor", "role": "kick", "grid": "X...X...X...X...", "description": "Kick on every beat, the backbone of every section with drums."},
+    {"name": "reverse bass", "role": "bass", "grid": "..xx..xx..xx..xx", "description": "Two bass 16ths after each kick (kick-bass-bass). Used in older and 'reverse bass' styles; modern tracks usually let the kick tail be the bass instead."},
+    {"name": "offbeat hi-hat", "role": "hihat", "grid": "..x...x...x...x.", "description": "Open hat on every off-beat 8th."},
+    {"name": "clap on two and four", "role": "clap", "grid": "....X.......X...", "description": "Clap layered on beats 2 and 4, common in intros and climaxes."},
+    {"name": "kick roll into the drop", "role": "kick", "grid": "x...x...x...x...|x.x.x.x.x.x.x.x.|xxxxxxxxxxxxxxxx|xxxxxxxxxxxxxxxx", "description": "Four-bar roll getting denser before the drop; music_roll with a velocity ramp is the flexible way to write it."},
+    {"name": "syncopated lead", "role": "lead", "grid": "X__x__x_X__x__x_", "description": "3-3-2 lead rhythm (tresillo feel) that sits against the straight kick."}
+  ],
+  "progressions": [
+    {"chords": ["i", "VI", "III", "VII"], "scale": "minor", "description": "The classic euphoric loop."},
+    {"chords": ["i", "iv", "VI", "V"], "scale": "harmonic_minor", "description": "The major V pulls strongly back to the tonic; good for the end of a phrase."},
+    {"chords": ["VI", "VII", "i", "i"], "scale": "minor", "description": "Rising into the tonic, useful for the last phrase of a breakdown."},
+    {"chords": ["i", "II", "i", "vii"], "scale": "phrygian", "description": "Dark flat-2 movement for raw drops, all chords within the scale."}
+  ],
+  "guidance": [
+    "The kick is the centrepiece: keep it on every beat whenever drums play, and keep other sounds out of its low end. Its tail is pitched, so tune it to the key's root (fl_set_step_params pitch on the kick channel).",
+    "In climaxes the kick tail often follows the chord roots, one pitch per bar or half bar.",
+    "Work in phrases of 8, 16 or 32 bars and change something at every phrase boundary; mark the last bar of a phrase with a fill or kick roll.",
+    "Leads are wide and layered: repeat the melody an octave up for the climax, and use slide or porta on notes for pitch glides.",
+    "Euphoric: emotional minor-key melodies, long breakdowns with pads or piano. Raw: darker scales (phrygian), screeches and distorted, rhythmic leads.",
+    "The breakdown melody usually returns in the climax, faster-feeling and louder, over the kick."
+  ]
+}

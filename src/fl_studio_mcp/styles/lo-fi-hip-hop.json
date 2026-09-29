@@ -1,0 +1,38 @@
+{
+  "name": "lo-fi-hip-hop",
+  "title": "Lo-fi Hip Hop",
+  "description": "Slow, relaxed beats with swung drums, jazzy seventh chords and a soft, slightly imperfect feel. Loop-based rather than built on big drops.",
+  "tempo": {"min": 65, "max": 95, "typical": 80},
+  "time_signature": "4/4",
+  "scales": ["major", "dorian", "minor", "major_pentatonic", "minor_pentatonic"],
+  "roles": {
+    "required": ["kick", "snare", "keys"],
+    "optional": ["hihat", "bass", "melody", "pad", "fx"]
+  },
+  "structure": [
+    {"section": "intro", "bars": 4, "description": "Keys alone or with a filtered drum loop."},
+    {"section": "loop A", "bars": 16, "description": "Full beat and the main chord loop; the melody enters after 4 or 8 bars."},
+    {"section": "loop B", "bars": 8, "description": "Variation: different chords, drums thinned out or a new melody."},
+    {"section": "loop A again", "bars": 16, "description": "Main loop returns with small changes."},
+    {"section": "outro", "bars": 4, "description": "Drums drop out or the whole mix is filtered away."}
+  ],
+  "rhythms": [
+    {"name": "boom-bap kick", "role": "kick", "grid": "X......x..X.....", "description": "Laid-back kick: beat 1, the last 16th of beat 2 and the 'and' of beat 3. Vary it every few bars."},
+    {"name": "backbeat snare", "role": "snare", "grid": "....X.......X...", "description": "Snare or rim on 2 and 4, slightly late for a lazy feel."},
+    {"name": "swung hats", "role": "hihat", "grid": "x.x.x.x.x.x.x.xx", "description": "8th-note hats with a pickup; apply swing to 16ths (music_transform swing, amount around 0.3-0.6, grid 0.25)."},
+    {"name": "held chords", "role": "keys", "grid": "X_______________", "description": "One chord per bar, held; humanize timing and velocity."}
+  ],
+  "progressions": [
+    {"chords": ["ii7", "V7", "Imaj7", "vi7"], "scale": "major", "description": "Jazz ii-V-I turnaround, the most typical loop."},
+    {"chords": ["Imaj7", "vi7", "ii7", "V7"], "scale": "major", "description": "Rhythm-changes style loop."},
+    {"chords": ["IVmaj7", "iii7", "ii7", "Imaj7"], "scale": "major", "description": "Descending, wistful."},
+    {"chords": ["i7", "IV7", "i7", "IV7"], "scale": "dorian", "description": "Dorian vamp with a bright major IV."}
+  ],
+  "guidance": [
+    "Swing and humanize everything (music_transform swing and humanize); perfectly quantized drums sound wrong here.",
+    "Seventh and ninth chords carry the mood; voice them close and in the middle register, and keep the bass simple (chord roots).",
+    "Keep velocities soft and varied; accents are gentle.",
+    "Melodies are short and sparse, often pentatonic, with space between phrases.",
+    "Loops repeat for a long time; change something small every 4 or 8 bars instead of building to a drop."
+  ]
+}
