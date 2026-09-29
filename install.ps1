@@ -63,7 +63,15 @@ Write-Host ""
 Write-Host "Copying controller and Piano Roll scripts into FL Studio Settings..."
 Write-Host ""
 
-$FlSettings = Join-Path $env:USERPROFILE "Documents\Image-Line\FL Studio\Settings"
+# Same lookup as the server (src/fl_studio_mcp/utils/paths.py): FL_MCP_SETTINGS_DIR wins,
+# otherwise the real Documents folder, which may be redirected to OneDrive.
+if ($env:FL_MCP_SETTINGS_DIR) {
+    $FlSettings = $env:FL_MCP_SETTINGS_DIR
+} else {
+    $Documents = [Environment]::GetFolderPath("MyDocuments")
+    $FlSettings = Join-Path $Documents "Image-Line\FL Studio\Settings"
+}
+Write-Host "FL Studio Settings folder: $FlSettings"
 $HardwareDir = Join-Path $FlSettings "Hardware\FLStudioMCP"
 $PianoScriptsDir = Join-Path $FlSettings "Piano roll scripts"
 

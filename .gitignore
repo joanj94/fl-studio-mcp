@@ -1,7 +1,21 @@
+# Environments
 .venv/
+.env
+
+# Local Claude Code settings
 .claude/
+
+# Lockfile (kept out of the repo upstream)
 uv.lock
-fl_controller/__pycache__/
-src/fl_studio_mcp/__pycache__/
-src/fl_studio_mcp/tools/__pycache__
-src/fl_studio_mcp/utils/__pycache__
+
+# Python bytecode (any directory, incl. scripts/ and tests/)
+__pycache__/
+*.py[cod]
+
+# Tool caches and test output
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
