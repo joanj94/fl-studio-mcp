@@ -111,21 +111,20 @@ def test_failure_response_still_lists_request_ids(piano_roll_script, flp, monkey
     assert json.loads(Path(piano_roll_script.REQUEST_FILE).read_text()) == []
 
 
-def test_response_write_retries_while_server_is_reading(piano_roll_script, monkeypatch):
-    real_replace = piano_roll_script.os.replace
-    failures = iter([True, True])
-
-    def flaky_replace(src, dst):
-        if next(failures, False):
-            raise PermissionError(13, "Access is denied")
-        real_replace(src, dst)
-
-    monkeypatch.setattr(piano_roll_script.os, "replace", flaky_replace)
+def test_files_are_written_without_renaming(piano_roll_script, monkeypatch):
+    # FL Studio 2026's os.replace returns NULL without an exception and leaves the
+    # embedded interpreter broken for every later call (seen live), so never call it.
+    calls = []
+    monkeypatch.setattr(piano_roll_script.os, "replace", lambda *args: calls.append(args))
+    monkeypatch.setattr(piano_roll_script.os, "remove", lambda *args: calls.append(args))
+    monkeypatch.setattr(piano_roll_script.os, "unlink", lambda *args: calls.append(args))
     _queue(piano_roll_script, [{"id": "r1", "action": "clear"}])
 
     piano_roll_script.apply()
 
     assert _response(piano_roll_script)["request_ids"] == ["r1"]
+    assert json.loads(Path(piano_roll_script.REQUEST_FILE).read_text()) == []
+    assert calls == []
 
 
 def test_empty_queue_still_writes_idle_response(piano_roll_script):

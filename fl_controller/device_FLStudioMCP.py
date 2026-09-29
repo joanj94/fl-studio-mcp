@@ -21,7 +21,6 @@ Communication flow:
 import json
 import os
 import sys
-import time
 from pathlib import Path
 
 # FL Studio API modules (available when running inside FL Studio)
@@ -133,10 +132,16 @@ def execute_pending_command():
 
 
 def write_response(response: dict, request_id=None):
-    """Write response to JSON file atomically, tagged with the request id.
+    """Write response to JSON file, tagged with the request id.
 
     Always writes something: if the result can't be serialized, an error
     response is written instead so the server doesn't wait until its timeout.
+
+    The file is written in place, never via temp file + os.replace: in FL Studio
+    2026, os.replace returns NULL without setting an exception, which leaves the
+    embedded interpreter failing every later call. Writing in place is safe
+    because the server skips JSON it can't parse and only accepts a response
+    carrying its own request id.
     """
     tagged = {**response, "id": request_id}
     try:
@@ -148,27 +153,10 @@ def write_response(response: dict, request_id=None):
             "error": f"Could not serialize FL Studio result: {e}",
         })
 
-    tmp_file = RESPONSE_FILE.with_name(RESPONSE_FILE.name + ".tmp")
     try:
-        tmp_file.write_text(text)
-        _replace_with_retry(tmp_file, RESPONSE_FILE)
+        RESPONSE_FILE.write_text(text)
     except Exception as e:
         print(f"Error writing response: {e}")
-
-
-def _replace_with_retry(src: Path, dst: Path, attempts: int = 5, delay: float = 0.02):
-    """os.replace, retried: on Windows it fails while the MCP server reads dst.
-
-    Mirrors fl_studio_mcp.utils.paths._replace_with_retry on the server side.
-    """
-    for attempt in range(attempts):
-        try:
-            os.replace(src, dst)
-            return
-        except PermissionError:
-            if attempt == attempts - 1:
-                raise
-            time.sleep(delay)
 
 
 def dispatch_command(action: str, params: dict) -> dict:

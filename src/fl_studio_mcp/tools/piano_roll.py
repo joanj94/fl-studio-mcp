@@ -156,7 +156,8 @@ def _trigger_and_wait(request_ids: list[str]) -> str:
     if response is None:
         return (
             f" Warning: FL Studio did not respond within {RESPONSE_TIMEOUT}s. Make sure a "
-            "piano roll is open and ComposeWithLLM was run once via Tools > Scripting; "
+            "piano roll is open and ComposeWithLLM was run once from the piano roll's own "
+            "menu (Tools > Scripting); "
             f"the requests stay queued, so press {trigger.keystroke} to retry."
         )
     return _describe_response(response)

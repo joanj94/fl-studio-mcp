@@ -15,7 +15,6 @@ import flpianoroll as flp
 import json
 import os
 import sys
-import time
 
 
 def get_documents_dir():
@@ -45,22 +44,17 @@ def get_script_dir():
     )
 
 
-def write_json_atomic(path, data, attempts=5, delay=0.02):
-    """Write JSON via a temp file so the MCP server never reads a half-written file.
+def write_json(path, data):
+    """Write JSON in place, never via temp file + os.replace.
 
-    The replace is retried: on Windows it fails while the server reads the file.
+    In FL Studio 2026, os.replace returns NULL without setting an exception,
+    which leaves the embedded interpreter failing every later call. Writing in
+    place is safe: the server skips JSON it can't parse and waits for its own
+    request ids. The text is serialized first so a bad value can't truncate the file.
     """
-    tmp_path = path + ".tmp"
-    with open(tmp_path, 'w') as f:
-        json.dump(data, f, indent=2)
-    for attempt in range(attempts):
-        try:
-            os.replace(tmp_path, path)
-            return
-        except PermissionError:
-            if attempt == attempts - 1:
-                raise
-            time.sleep(delay)
+    text = json.dumps(data, indent=2)
+    with open(path, 'w') as f:
+        f.write(text)
 
 
 REQUEST_FILE = os.path.join(get_script_dir(), "mcp_request.json")
@@ -103,7 +97,7 @@ def export_piano_roll_state():
     }
 
     # Save to file
-    write_json_atomic(STATE_FILE, export_data)
+    write_json(STATE_FILE, export_data)
 
     return STATE_FILE
 
@@ -163,7 +157,7 @@ def process_mcp_request():
                     total_notes += result.get("notes_added", 0)
 
         # Clear the request queue after processing
-        write_json_atomic(REQUEST_FILE, [])
+        write_json(REQUEST_FILE, [])
 
         return {
             "status": "success",
@@ -177,7 +171,7 @@ def process_mcp_request():
         # Drop the batch so a failing request isn't replayed (and partially
         # re-applied) on every later trigger; the server gets the error instead.
         try:
-            write_json_atomic(REQUEST_FILE, [])
+            write_json(REQUEST_FILE, [])
         except Exception:
             pass  # The error response below is what matters.
         return {"status": "error", "message": str(e), "request_ids": request_ids}
@@ -329,6 +323,6 @@ def apply(form=None):
     if not result:
         result = {"status": "idle", "request_ids": []}
     try:
-        write_json_atomic(RESPONSE_FILE, result)
+        write_json(RESPONSE_FILE, result)
     except Exception:
         pass  # No UI in auto mode; the server reports a timeout instead.
