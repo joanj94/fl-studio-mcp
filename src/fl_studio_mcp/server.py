@@ -23,6 +23,7 @@ from fastmcp import FastMCP
 from fl_studio_mcp.tools import (
     register_channel_tools,
     register_mixer_tools,
+    register_music_tools,
     register_piano_roll_tools,
     register_plugin_tools,
     register_transport_tools,
@@ -43,6 +44,11 @@ Available tool categories:
 - Mixer: Volume, pan, mute, solo, track management
 - Channels: Channel info, note triggering, step sequencer
 - Plugins: Parameter control, preset navigation (cannot load new plugins)
+- Piano roll: Write, delete and read persistent notes (fl_send_notes, ...)
+- Music (music_*): Build notes from scales, chords, roman numerals, scale degrees,
+  rhythm grids and rolls, and transform them (arpeggiate, transpose, humanize, ...).
+  These don't touch FL Studio; their output goes straight into fl_send_notes.
+  Call music_reference once to see the vocabulary. Pitch names use C4 = MIDI 60.
 
 Important limitations:
 1. Cannot load new VST/AU plugins - only control existing ones
@@ -140,6 +146,7 @@ register_mixer_tools(mcp)
 register_channel_tools(mcp)
 register_plugin_tools(mcp)
 register_piano_roll_tools(mcp)
+register_music_tools(mcp)
 
 
 def main():

@@ -50,6 +50,18 @@ This is a fork of [karl-andres/fl-studio-mcp](https://github.com/karl-andres/fl-
 - **Read piano roll state** to see all existing notes
 - Auto-triggering via keystroke (Cmd+Opt+Y on macOS, Ctrl+Alt+Y on Windows), with confirmation from FL Studio of what was applied
 
+### Music Toolkit
+
+Genre-agnostic helpers that build and transform notes **without touching FL Studio**. Their output is in the same format `fl_send_notes` accepts, so an AI can generate, combine and check material before writing it:
+
+- Scales and modes, chord symbols (`Fm7`, `C/E`) and roman numerals (`i-VI-III-VII`, `V7`, `bVII`)
+- Melodies as scale degrees (`[1, 3, 5, None, 8]`)
+- Step-grid rhythms (`X...x...|x_..x.x.`) and Euclidean rhythms (`E(3,8)`)
+- Rolls that speed up (for fills and build-ups)
+- Transforms: arpeggiate, transpose, shift, stretch, reverse, quantize, swing, humanize, snap to scale, legato, repeat, velocity ramp
+
+Pitch names use scientific notation, where **C4 = MIDI 60**. FL Studio's piano roll labels the same note C5.
+
 ## Changes in this fork
 
 Compared with upstream, this fork currently adds:
@@ -64,7 +76,7 @@ Compared with upstream, this fork currently adds:
 ## Roadmap
 
 1. **Foundation**: reliable protocol, tests, port and path handling. ✅
-2. **Generic music toolkit** (pure Python): notes in musical units (bars/beats, note names), scales and modes, chord symbols and progressions, rhythm grids and Euclidean rhythms, transforms (transpose, quantize, humanize, arpeggiate).
+2. **Generic music toolkit** (pure Python): notes in musical units, scales and modes, chord symbols and roman numerals, scale-degree melodies, rhythm grids and Euclidean rhythms, rolls, transforms (arpeggiate, transpose, quantize, swing, humanize, ...). ✅
 3. **More FL control**: tempo and time signature, pattern selection, writing notes into a specific channel and pattern, and full note properties (slide, porta, pan, fine pitch).
 4. **Roles and templates**: refer to instruments by role (`"kick"`, `"lead"`, …) instead of channel numbers, based on a template project you prepare.
 5. **Style packs**: optional data and prompt files describing a genre (tempo range, structure, idioms); hardstyle and hardcore first, plus one very different genre to keep the core generic.
@@ -332,6 +344,18 @@ uv run fl-studio-mcp
 | `fl_get_piano_roll_info` | Get piano roll system info |
 | `fl_clear_request_queue` | Cancel pending queued changes |
 
+### Music (no FL Studio needed)
+
+| Tool | Description |
+|------|-------------|
+| `music_reference` | List scales, chord qualities, transform operations and grid syntax |
+| `music_scale` | Pitches of a scale |
+| `music_chords` | Chord progression from symbols and/or roman numerals |
+| `music_degrees` | Melody from scale degrees |
+| `music_rhythm` | Notes from a step-grid or Euclidean pattern |
+| `music_roll` | Roll that speeds up, with a velocity ramp |
+| `music_transform` | Apply a list of transform operations to notes |
+
 ## Example Prompts
 
 ```text
@@ -340,6 +364,8 @@ uv run fl-studio-mcp
 "Add a C major arpeggio starting at beat 0: C4, E4, G4, C5, each a quarter note"
 "Add Am at beat 0, F at beat 4, C at beat 8 and G at beat 12, each 4 beats long"
 "List the parameters of the plugin on channel 0 and set the filter cutoff to 50%"
+"Write an F minor i-VI-III-VII progression, arpeggiate it in 16ths up and down over two octaves, and put it in the piano roll"
+"Add a snare roll over the last 2 bars that goes 8ths, 16ths, 32nds and gets louder"
 ```
 
 ## Troubleshooting
@@ -438,7 +464,8 @@ fl-studio-mcp/
 │   └── setup.sh                  # FL Studio script installer (macOS)
 ├── src/fl_studio_mcp/
 │   ├── server.py                 # FastMCP server entry point
-│   ├── tools/                    # MCP tools: channels, mixer, piano_roll, plugins, transport
+│   ├── music/                    # Genre-agnostic toolkit: model, theory, rhythm, transform
+│   ├── tools/                    # MCP tools: channels, mixer, music, piano_roll, plugins, transport
 │   └── utils/
 │       ├── connection.py         # FL Studio connection wrapper
 │       ├── fl_trigger.py         # Piano roll keystroke trigger
