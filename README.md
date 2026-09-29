@@ -14,6 +14,12 @@ This is a fork of [karl-andres/fl-studio-mcp](https://github.com/karl-andres/fl-
 - Get/set tempo (decimals allowed)
 - List, select, rename patterns and find an empty one (selecting an unused pattern number creates it)
 
+### Roles
+
+- Address a channel by a word in its name instead of its index: `"kick"` finds "808 Kick", `"sub bass"` finds "Sub Bass"
+- Every note and step tool accepts a role wherever it takes a channel
+- Check that a project has the parts a piece needs before writing (`fl_check_roles`)
+
 ### Transport Control
 
 - Play, pause, stop playback
@@ -89,7 +95,7 @@ Compared with upstream, this fork currently adds:
 1. **Foundation**: reliable protocol, tests, port and path handling. ✅
 2. **Generic music toolkit** (pure Python): notes in musical units, scales and modes, chord symbols and roman numerals, scale-degree melodies, rhythm grids and Euclidean rhythms, rolls, transforms (arpeggiate, transpose, quantize, swing, humanize, ...). ✅
 3. **More FL control**: tempo, project overview, pattern selection, per-step parameters, writing notes into a specific channel and pattern, and full note properties (slide, porta, pan, fine pitch). ✅
-4. **Roles and templates**: refer to instruments by role (`"kick"`, `"lead"`, …) instead of channel numbers, based on a template project you prepare.
+4. **Roles and templates**: refer to instruments by role (`"kick"`, `"lead"`, …) instead of channel numbers, based on a template project you prepare. ✅
 5. **Style packs**: optional data and prompt files describing a genre (tempo range, structure, idioms); hardstyle and hardcore first, plus one very different genre to keep the core generic.
 6. **Render and analysis** (optional): render via FL's command line and give the AI feedback on loudness, spectrum and key.
 
@@ -216,7 +222,7 @@ cp fl_controller/device_FLStudioMCP.py "$SETTINGS/Hardware/FLStudioMCP/"
 cp scripts/ComposeWithLLM.pyscript "$SETTINGS/Piano roll scripts/"
 ```
 
-After pulling changes to either script, copy it again and restart FL Studio (or reload the script); FL runs the installed copy, not the one in this repo.
+After pulling changes to either script, copy it again; FL runs the installed copy, not the one in this repo. The piano roll script is re-read each time it runs. For the controller, reload it once from FL (View > Script output > Reload script); once it's installed, later updates can also be applied with the `dev.reloadScript` command (see Development), which makes it re-run its installed file.
 
 ### 4. Configure FL Studio
 
@@ -270,7 +276,18 @@ uv run fl-studio-mcp
 2. Open the Piano Roll (F7 or double-click the channel)
 3. The first time in each FL session, run the script manually from the **piano roll's own menu** (the ▸ arrow in the piano roll window's top-left corner): **Tools > Scripting > ComposeWithLLM**. FL's main Tools menu in the top bar is a different menu and doesn't list piano roll scripts
 4. After that, the MCP tools trigger the script automatically and report what FL Studio applied
-5. The script writes to the **selected** channel's piano roll in the **selected** pattern. Pass `channel` and `pattern` to the note tools and they select both first
+5. The script edits the channel the piano roll window shows, in the current pattern. Pass `channel` (an index or a role) and `pattern` to the note tools and they switch the piano roll there first. You'll see the window briefly close and reopen
+
+### Preparing a Template Project
+
+The scripting API can't load plugins, so the AI works with the instruments already in the project. Set up a project once and reuse it:
+
+1. Add a channel for each part you want the AI to write (drums, bass, lead, pads, effects…) and load your instruments and presets.
+2. **Name each channel after its role**, such as "Kick", "Sub Bass" or "Lead". A role matches whole words in a name, ignoring case and punctuation: "Kick" finds "Kick" or "808 Kick", "bass" finds "Sub Bass" but not "Bassline". An exact name always wins, so if both "Kick" and "Kick Top" exist, "kick" means "Kick". Two channels that match equally (for example two named "Pad") are reported as ambiguous, never guessed.
+3. Route each channel to its own mixer track if you want the AI to mix parts separately.
+4. Save it as a template. FL Studio lists projects saved under `Documents\Image-Line\FL Studio\Projects\Templates\<Category>\<Name>\<Name>.flp` in **File > New from template**.
+
+Ask the AI to run `fl_get_roles` to see what it can address, or `fl_check_roles` with the parts it needs.
 
 ## Available Tools
 
@@ -297,6 +314,13 @@ uv run fl-studio-mcp
 | `fl_select_pattern` | Select a pattern (an unused number creates it) |
 | `fl_rename_pattern` | Rename a pattern (current one by default) |
 | `fl_find_empty_pattern` | Lowest unused pattern number |
+
+### Roles
+
+| Tool | Description |
+|------|-------------|
+| `fl_get_roles` | Channels addressable by role, with mixer track and plugin |
+| `fl_check_roles` | Which of a list of roles the project has (found / missing / ambiguous) |
 
 ### Transport
 
@@ -377,7 +401,7 @@ uv run fl-studio-mcp
 | `fl_clear_piano_roll` | Clear all notes |
 | `fl_get_piano_roll_state` | Read the piano roll's notes, fresh from FL |
 
-These five take optional `channel` and `pattern`. Notes can carry `velocity`, `release`, `pan`, `fcut`, `fres` (all 0.0-1.0), `slide`, `porta`, `muted`, `color` and `fine_pitch` (cents, ±1200; read back as `pitchofs` in tens of cents).
+These five take optional `channel` (an index or a role) and `pattern`. Notes can carry `velocity`, `release`, `pan`, `fcut`, `fres` (all 0.0-1.0), `slide`, `porta`, `muted`, `color` and `fine_pitch` (cents, ±1200; read back as `pitchofs` in tens of cents).
 | `fl_trigger_script` | Manually trigger the FL Studio script for queued requests |
 | `fl_get_piano_roll_info` | Get piano roll system info |
 | `fl_clear_request_queue` | Cancel pending queued changes |
@@ -405,6 +429,7 @@ These five take optional `channel` and `pattern`. Notes can carry `velocity`, `r
 "Write an F minor i-VI-III-VII progression, arpeggiate it in 16ths up and down over two octaves, and put it in the piano roll"
 "Add a snare roll over the last 2 bars that goes 8ths, 16ths, 32nds and gets louder"
 "Set the tempo to 150, find an empty pattern, call it 'Intro' and put a bassline on channel 3 there"
+"Check the project has a kick, a bass and a lead, then write a 4-bar bassline on the bass"
 "Write a 16-step hi-hat pattern on channel 2 with accents on the off-beats and the 4th step panned left"
 ```
 
@@ -488,6 +513,7 @@ uv sync --python 3.12   # installs runtime and dev dependencies
 | `uv run ruff check --fix .` | Lint and auto-fix |
 | `uv run pytest` | Run tests (FL Studio not required; the FL API is faked) |
 | `uv run pytest --cov --cov-report=term-missing` | Run tests with coverage |
+| `uv run python -c "from fl_studio_mcp.utils.connection import call; print(call('dev.reloadScript'))"` | Make the running FL controller re-run its installed file after you copy a new version in |
 
 The FL-side scripts run inside FL Studio's embedded Python and can't import the server package. The tests load them against fake FL modules (`tests/fakes.py`). Changes to them still need a manual check in FL Studio.
 

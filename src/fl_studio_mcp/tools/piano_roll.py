@@ -25,6 +25,7 @@ from fl_studio_mcp.music.model import DEFAULT_VELOCITY
 from fl_studio_mcp.utils.connection import call
 from fl_studio_mcp.utils.fl_trigger import get_trigger
 from fl_studio_mcp.utils.paths import atomic_write_json, get_piano_roll_scripts_dir
+from fl_studio_mcp.utils.roles import resolve_channel
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -215,7 +216,7 @@ def _prepare_note(note: dict) -> dict:
     return prepared
 
 
-def _select_target(channel: int | None, pattern: int | None) -> str | None:
+def _select_target(channel: int | str | None, pattern: int | None) -> str | None:
     """Make the channel, then the pattern, active so the piano roll edits them.
 
     The channel goes first: a bad channel index then fails before the project's
@@ -224,7 +225,11 @@ def _select_target(channel: int | None, pattern: int | None) -> str | None:
     Returns an error message, or None when the target is selected.
     """
     if channel is not None:
-        result = call("channels.selectOne", {"index": channel})
+        try:
+            channel = resolve_channel(channel)
+        except ValueError as e:
+            return str(e)
+        result = call("channels.showInPianoRoll", {"index": channel})
         if "error" in result:
             return result["error"]
     if pattern is not None:
@@ -249,7 +254,7 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
         notes: list[dict],
         mode: str = "add",
         auto_trigger: bool = True,
-        channel: int | None = None,
+        channel: int | str | None = None,
         pattern: int | None = None,
     ) -> str:
         """Add or replace notes in the FL Studio piano roll.
@@ -271,7 +276,8 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
                    Other fields (e.g. note_name from fl_get_piano_roll_state) are ignored.
             mode: "add" to add notes, "replace" to clear existing notes first
             auto_trigger: Whether to automatically trigger FL Studio (default True)
-            channel: Channel index (0-based) to write to; default: the selected one.
+            channel: Channel index (0-based) or role (see fl_get_roles) to write to;
+                default: the selected one.
             pattern: Pattern index (1-based) to write to; default: the active one.
 
         Example notes:
@@ -325,7 +331,7 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
         duration: float = 1.0,
         velocity: float = 0.8,
         auto_trigger: bool = True,
-        channel: int | None = None,
+        channel: int | str | None = None,
         pattern: int | None = None,
     ) -> str:
         """Add a chord (multiple simultaneous notes) to the FL Studio piano roll.
@@ -339,7 +345,8 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
             duration: Length in quarter notes for all notes (default 1.0)
             velocity: Velocity 0.0-1.0 for all notes (default 0.8)
             auto_trigger: Whether to automatically trigger FL Studio
-            channel: Channel index (0-based) to write to; default: the selected one.
+            channel: Channel index (0-based) or role (see fl_get_roles) to write to;
+                default: the selected one.
             pattern: Pattern index (1-based) to write to; default: the active one.
 
         Example - C major chord at beat 0:
@@ -378,7 +385,7 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
     def fl_delete_notes(
         notes: list[dict],
         auto_trigger: bool = True,
-        channel: int | None = None,
+        channel: int | str | None = None,
         pattern: int | None = None,
     ) -> str:
         """Delete specific notes from the FL Studio piano roll.
@@ -388,7 +395,7 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
                    - midi (int): MIDI note number
                    - time (float): Start position in quarter notes
             auto_trigger: Whether to automatically trigger FL Studio
-            channel: Channel index (0-based); default: the selected one.
+            channel: Channel index (0-based) or role; default: the selected one.
             pattern: Pattern index (1-based); default: the active one.
 
         Example:
@@ -413,14 +420,14 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
     @mcp.tool()
     def fl_clear_piano_roll(
         auto_trigger: bool = True,
-        channel: int | None = None,
+        channel: int | str | None = None,
         pattern: int | None = None,
     ) -> str:
         """Clear all notes from the FL Studio piano roll.
 
         Args:
             auto_trigger: Whether to automatically trigger FL Studio
-            channel: Channel index (0-based); default: the selected one.
+            channel: Channel index (0-based) or role; default: the selected one.
             pattern: Pattern index (1-based); default: the active one.
         """
         target_error = _select_target(channel, pattern)
@@ -434,9 +441,9 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def fl_get_piano_roll_state(
-        channel: int | None = None,
+        channel: int | str | None = None,
         pattern: int | None = None,
-        refresh: bool = False,
+        refresh: bool = True,
     ) -> dict:
         """Get the notes in an FL Studio piano roll.
 
@@ -444,14 +451,15 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
         - ppq: Pulses per quarter note (ticks per beat)
         - notes: List of all notes with their properties (times in quarter notes)
 
-        With `channel` or `pattern`, that target is selected and read fresh from
-        FL. Otherwise the state exported by the last piano roll run is returned,
-        unless `refresh` is true.
+        Reads fresh from FL: the piano roll showing `channel` in `pattern`, or
+        whatever it shows now. With refresh=False, returns the state exported by
+        the last piano roll run instead (no FL round trip; may be stale).
 
         Args:
-            channel: Channel index (0-based) to read.
+            channel: Channel index (0-based) or role to read.
             pattern: Pattern index (1-based) to read.
-            refresh: Re-read the current piano roll from FL before returning.
+            refresh: Ask FL for the current notes (default). False returns the
+                last exported state.
         """
         if channel is not None or pattern is not None or refresh:
             target_error = _select_target(channel, pattern)

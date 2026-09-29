@@ -28,6 +28,7 @@ from fl_studio_mcp.tools import (
     register_piano_roll_tools,
     register_plugin_tools,
     register_project_tools,
+    register_roles_tools,
     register_transport_tools,
 )
 from fl_studio_mcp.utils.connection import get_connection, reset_connection
@@ -41,10 +42,14 @@ FL Studio MCP Server - Control FL Studio from AI assistants.
 This server provides tools to control FL Studio through its Python scripting API.
 FL Studio must be running with the "FL Studio MCP Controller" MIDI script enabled.
 Start with fl_get_project_overview to see tempo, patterns and channels.
+Channels can be addressed by role: a word from the channel's name ("kick" finds
+"808 Kick"). fl_get_roles lists them; fl_check_roles checks a project has the
+parts you need. Note and step tools accept a role wherever they take a channel.
 
 Available tool categories:
 - Project: Overview, tempo (fl_get_project_overview, fl_set_tempo)
 - Patterns: List, select (an unused index creates the pattern), rename, find empty
+- Roles: fl_get_roles, fl_check_roles
 - Transport: Play, stop, record, position control
 - Mixer: Volume, pan, mute, solo, track management
 - Channels: Channel info, note triggering, step sequencer incl. per-step pitch,
@@ -157,6 +162,7 @@ register_piano_roll_tools(mcp)
 register_music_tools(mcp)
 register_project_tools(mcp)
 register_pattern_tools(mcp)
+register_roles_tools(mcp)
 
 
 def main():

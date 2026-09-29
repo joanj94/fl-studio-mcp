@@ -7,6 +7,7 @@ from fl_studio_mcp.tools.patterns import register_pattern_tools
 from fl_studio_mcp.tools.piano_roll import register_piano_roll_tools
 from fl_studio_mcp.tools.plugins import register_plugin_tools
 from fl_studio_mcp.tools.project import register_project_tools
+from fl_studio_mcp.tools.roles import register_roles_tools
 from fl_studio_mcp.tools.transport import register_transport_tools
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "register_music_tools",
     "register_project_tools",
     "register_pattern_tools",
+    "register_roles_tools",
 ]

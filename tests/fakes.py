@@ -12,7 +12,7 @@ from typing import Any, Callable
 from unittest.mock import MagicMock
 
 FL_CONTROLLER_MODULES = (
-    "channels", "general", "midi", "mixer", "patterns", "plugins", "transport",
+    "channels", "general", "midi", "mixer", "patterns", "plugins", "transport", "ui",
 )
 
 

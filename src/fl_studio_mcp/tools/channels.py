@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from fl_studio_mcp.utils.connection import call
+from fl_studio_mcp.utils.roles import resolve_channel
 from fl_studio_mcp.utils.step_params import step_from_fl, step_to_fl
 
 if TYPE_CHECKING:
@@ -368,13 +369,19 @@ def register_channel_tools(mcp: FastMCP) -> None:
         return f"Channel '{channel_name}' step {position} {'enabled' if value else 'disabled'}"
 
     @mcp.tool()
-    def fl_get_step_sequence(channel: int, steps: int = 16) -> list[bool]:
+    def fl_get_step_sequence(channel: int | str, steps: int = 16) -> list[bool] | dict:
         """Get the step sequence pattern for a channel.
 
         Args:
-            channel: Channel index (global)
+            channel: Channel index (global) or role (see fl_get_roles)
             steps: Number of steps to retrieve (default 16)
+
+        Returns a list of on/off values, or {"error": ...}.
         """
+        try:
+            channel = resolve_channel(channel)
+        except ValueError as e:
+            return {"error": str(e)}
         conn = get_connection()
         result = conn.send_command("channels.getStepSequence", {
             "channel": channel,
@@ -382,18 +389,22 @@ def register_channel_tools(mcp: FastMCP) -> None:
         })
 
         if not result.get("success", False) and "error" in result:
-            return []
+            return {"error": result["error"]}
 
         return result.get("sequence", [])
 
     @mcp.tool()
-    def fl_set_step_sequence(channel: int, pattern: list[bool]) -> str:
+    def fl_set_step_sequence(channel: int | str, pattern: list[bool]) -> str:
         """Set a complete step sequence pattern for a channel.
 
         Args:
-            channel: Channel index (global)
+            channel: Channel index (global) or role (see fl_get_roles)
             pattern: List of boolean values for each step (True = on, False = off)
         """
+        try:
+            channel = resolve_channel(channel)
+        except ValueError as e:
+            return f"Error: {e}"
         conn = get_connection()
         result = conn.send_command("channels.setStepSequence", {
             "channel": channel,
@@ -411,7 +422,9 @@ def register_channel_tools(mcp: FastMCP) -> None:
         )
 
     @mcp.tool()
-    def fl_set_step_params(channel: int, steps: list[dict], pattern: int | None = None) -> dict:
+    def fl_set_step_params(
+        channel: int | str, steps: list[dict], pattern: int | None = None
+    ) -> dict:
         """Program step sequencer steps with per-step pitch, velocity, pan and more.
 
         Only the fields you give are changed. Each step dict:
@@ -424,7 +437,7 @@ def register_channel_tools(mcp: FastMCP) -> None:
             shift: delay in ticks (see ppq in fl_get_project_overview; one step = ppq/4)
 
         Args:
-            channel: Channel index (global, 0-based).
+            channel: Channel index (global, 0-based) or role (see fl_get_roles).
             steps: Steps to change, e.g. [{"step": 0, "on": true, "pitch": "C3",
                 "velocity": 1.0}, {"step": 4, "on": true, "velocity": 0.6}].
             pattern: Pattern to edit (1-based); it becomes the active pattern.
@@ -432,6 +445,7 @@ def register_channel_tools(mcp: FastMCP) -> None:
         """
         try:
             raw_steps = [step_to_fl(step) for step in steps]
+            channel = resolve_channel(channel)
         except ValueError as e:
             return {"error": str(e)}
         params = {"channel": channel, "steps": raw_steps}
@@ -440,15 +454,19 @@ def register_channel_tools(mcp: FastMCP) -> None:
         return call("channels.setStepParams", params)
 
     @mcp.tool()
-    def fl_get_step_params(channel: int, steps: int = 16) -> dict:
+    def fl_get_step_params(channel: int | str, steps: int = 16) -> dict:
         """Read step sequencer steps of the active pattern, with parameters of active steps.
 
         Values use the same units as fl_set_step_params.
 
         Args:
-            channel: Channel index (global, 0-based).
+            channel: Channel index (global, 0-based) or role (see fl_get_roles).
             steps: How many steps to read from the start of the pattern.
         """
+        try:
+            channel = resolve_channel(channel)
+        except ValueError as e:
+            return {"error": str(e)}
         result = call("channels.getStepParams", {"channel": channel, "steps": steps})
         if "error" in result:
             return result

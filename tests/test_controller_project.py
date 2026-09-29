@@ -150,6 +150,16 @@ def test_set_step_params_writes_each_param_and_grid_bit(controller, fl):
     channels.setStepParameterByIndex.assert_any_call(2, 1, 0, 1, 127, True)
     assert channels.setStepParameterByIndex.call_count == 2
     assert result["steps_written"] == 2
+    assert result["params_written"] == 2
+
+
+def test_set_step_params_counts_steps_switched_off_without_params(controller, fl):
+    result = controller.dispatch_command("channels.setStepParams", {
+        "channel": 2, "steps": [{"step": 0, "on": False}, {"step": 2, "on": False}],
+    })
+
+    assert result["steps_written"] == 2
+    assert result["params_written"] == 0
 
 
 def test_set_step_params_in_another_pattern_selects_it_first(controller, fl):
@@ -202,3 +212,102 @@ def test_step_shift_is_written_as_absolute_position(controller, fl):
     })
 
     fl["channels"].setStepParameterByIndex.assert_called_once_with(0, 1, 2, 7, 2 * 24 + 6, True)
+
+
+def test_get_all_channels_includes_plugin_name(controller, fl_modules):
+    fl_modules["channels"].channelCount.return_value = 2
+    fl_modules["channels"].getChannelName.side_effect = ["Kick", "Lead"]
+    fl_modules["plugins"].isValid.side_effect = [False, True]
+    fl_modules["plugins"].getPluginName.return_value = "Sytrus"
+
+    result = controller.dispatch_command("channels.getAll", {})
+
+    assert [c["plugin"] for c in result["channels"]] == [None, "Sytrus"]
+    # getPluginName(index, slotIndex, userName, useGlobalIndex): the plugin's own name
+    fl_modules["plugins"].getPluginName.assert_called_once_with(1, -1, False, True)
+
+
+def test_show_in_piano_roll_selects_then_reopens_the_window(controller, fl_modules):
+    calls = []
+    fl_modules["channels"].channelCount.return_value = 5
+    fl_modules["channels"].getChannelName.return_value = "808 Astronomic"
+    fl_modules["channels"].selectOneChannel.side_effect = lambda i, g: calls.append(f"select {i}")
+    fl_modules["ui"].hideWindow.side_effect = lambda w: calls.append("hide")
+    fl_modules["ui"].showWindow.side_effect = lambda w: calls.append("show")
+
+    result = controller.dispatch_command("channels.showInPianoRoll", {"index": 4})
+
+    assert calls == ["select 4", "hide", "show"]
+    fl_modules["ui"].showWindow.assert_called_with(fl_modules["midi"].widPianoRoll)
+    assert result == {"channel_name": "808 Astronomic"}
+
+
+@pytest.mark.parametrize("index", [-1, 5, "4", None])
+def test_show_in_piano_roll_rejects_bad_indexes(controller, fl_modules, index):
+    fl_modules["channels"].channelCount.return_value = 5
+
+    result = controller.dispatch_command("channels.showInPianoRoll", {"index": index})
+
+    assert "error" in result
+    fl_modules["channels"].selectOneChannel.assert_not_called()
+    fl_modules["ui"].hideWindow.assert_not_called()
+
+
+def test_reload_script_re_executes_the_installed_file(controller, tmp_path, monkeypatch):
+    monkeypatch.setattr(controller, "SCRIPT_DIR", tmp_path)
+    (tmp_path / "device_FLStudioMCP.py").write_text("RELOAD_MARKER = 42\n")
+
+    result = controller.dispatch_command("dev.reloadScript", {})
+
+    assert result == {"reloaded": str(tmp_path / "device_FLStudioMCP.py")}
+    assert controller.RELOAD_MARKER == 42
+
+
+def test_reload_script_reports_a_broken_file_without_changing_anything(
+    controller, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(controller, "SCRIPT_DIR", tmp_path)
+    (tmp_path / "device_FLStudioMCP.py").write_text("RELOAD_MARKER = (\n")
+
+    result = controller.dispatch_command("dev.reloadScript", {})
+
+    assert "SyntaxError" in result["error"]
+    assert not hasattr(controller, "RELOAD_MARKER")
+
+
+def test_reload_script_reports_a_runtime_error_as_partial(controller, tmp_path, monkeypatch):
+    monkeypatch.setattr(controller, "SCRIPT_DIR", tmp_path)
+    (tmp_path / "device_FLStudioMCP.py").write_text(
+        "RELOAD_MARKER = 1\nraise RuntimeError('boom')\n"
+    )
+
+    result = controller.dispatch_command("dev.reloadScript", {})
+
+    assert "boom" in result["error"]
+    assert "partly" in result["error"]
+
+
+def test_get_all_channels_survives_a_failing_plugin_lookup(controller, fl_modules):
+    fl_modules["channels"].channelCount.return_value = 2
+    fl_modules["plugins"].isValid.side_effect = [RuntimeError("broken plugin"), True]
+    fl_modules["plugins"].getPluginName.return_value = "Sytrus"
+
+    result = controller.dispatch_command("channels.getAll", {})
+
+    assert [c["plugin"] for c in result["channels"]] == [None, "Sytrus"]
+
+
+@pytest.mark.parametrize("action", ["plugins.getName", "plugins.nextPreset", "plugins.prevPreset"])
+@pytest.mark.parametrize("params, expected", [
+    ({"index": 3}, (3, -1, False, True)),  # channel plugin, global index
+    ({"index": 3, "slot_index": 2}, (3, 2, False)),  # mixer effect slot
+])
+def test_plugin_handlers_ask_for_the_plugin_name_not_the_user_name(
+    controller, fl_modules, action, params, expected
+):
+    fl_modules["plugins"].isValid.return_value = True
+    fl_modules["plugins"].getParamCount.return_value = 0
+
+    controller.dispatch_command(action, params)
+
+    fl_modules["plugins"].getPluginName.assert_called_with(*expected)

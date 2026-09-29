@@ -31,6 +31,7 @@ import mixer
 import patterns
 import plugins
 import transport
+import ui
 
 
 def _get_documents_dir() -> Path:
@@ -161,10 +162,33 @@ def write_response(response: dict, request_id=None):
         print(f"Error writing response: {e}")
 
 
+def handle_dev_reload_script() -> dict:
+    """Re-run this script's installed file so edits apply without FL's Reload button.
+
+    The source is compiled first, so a syntax error changes nothing. Functions
+    and constants are then replaced in place, and the next command uses the new
+    code. If the file raises while running, the names defined before the error
+    are already replaced: fix the file and reload again, or use FL's Reload.
+    """
+    path = SCRIPT_DIR / "device_FLStudioMCP.py"
+    try:
+        code = compile(path.read_text(encoding="utf-8"), str(path), "exec")
+    except SyntaxError as e:
+        return {"error": "SyntaxError in %s: %s" % (path, e)}
+    try:
+        exec(code, globals())
+    except Exception as e:
+        return {"error": "Reload of %s partly applied, then failed: %r. "
+                         "Fix the file and reload again." % (path, e)}
+    return {"reloaded": str(path)}
+
+
 def dispatch_command(action: str, params: dict) -> dict:
     """Route command to appropriate handler and return result."""
 
     # Transport commands
+    if action == "dev.reloadScript":
+        return handle_dev_reload_script()
     if action == "transport.start":
         return handle_transport_start()
     elif action == "transport.stop":
@@ -217,6 +241,8 @@ def dispatch_command(action: str, params: dict) -> dict:
         return handle_channels_get_selected()
     elif action == "channels.select":
         return handle_channels_select(params)
+    elif action == "channels.showInPianoRoll":
+        return handle_channels_show_in_piano_roll(params)
     elif action == "channels.selectOne":
         return handle_channels_select_one(params)
     elif action == "channels.triggerNote":
@@ -537,6 +563,16 @@ def handle_channels_get_info(params: dict) -> dict:
     }
 
 
+def _plugin_name(channel: int):
+    """The channel's plugin name, or None (no plugin, or FL couldn't say)."""
+    try:
+        if plugins.isValid(channel, -1, True):
+            return plugins.getPluginName(channel, -1, False, True)
+    except Exception:
+        pass  # One odd channel shouldn't break the whole channel list.
+    return None
+
+
 def handle_channels_get_all() -> dict:
     """Get info about all channels."""
     channels_list = []
@@ -549,6 +585,7 @@ def handle_channels_get_all() -> dict:
             "is_muted": channels.isChannelMuted(i, True) == 1,
             "is_selected": channels.isChannelSelected(i, True) == 1,
             "target_fx_track": channels.getTargetFxTrack(i, True),
+            "plugin": _plugin_name(i),
         })
 
     return {"channels": channels_list}
@@ -582,6 +619,22 @@ def handle_channels_select(params: dict) -> dict:
         "selected": select,
         "channel_name": channels.getChannelName(index, True),
     }
+
+
+def handle_channels_show_in_piano_roll(params: dict) -> dict:
+    """Make the piano roll show a channel, so piano roll scripts edit that channel.
+
+    Selecting a channel doesn't retarget an open piano roll; hiding and showing
+    the window after selecting does (verified live, FL 2026).
+    """
+    index = params.get("index")
+    count = channels.channelCount(True)
+    if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < count:
+        return {"error": "Channel index must be 0-%d, got %r" % (count - 1, index)}
+    channels.selectOneChannel(index, True)
+    ui.hideWindow(midi.widPianoRoll)
+    ui.showWindow(midi.widPianoRoll)
+    return {"channel_name": channels.getChannelName(index, True)}
 
 
 def handle_channels_select_one(params: dict) -> dict:
@@ -777,7 +830,7 @@ def handle_channels_set_step_params(params: dict) -> dict:
     pattern = patterns.patternNumber()
     ticks_per_step = _ticks_per_step()
 
-    written = 0
+    params_written = 0
     for step in steps:
         position = step["step"]
         if "on" in step:
@@ -788,12 +841,13 @@ def handle_channels_set_step_params(params: dict) -> dict:
                 if name == "shift":
                     value += position * ticks_per_step
                 channels.setStepParameterByIndex(channel, pattern, position, param_id, value, True)
-                written += 1
+                params_written += 1
 
     return {
         "channel_name": channels.getChannelName(channel, True),
         "pattern": pattern,
-        "steps_written": written,
+        "steps_written": len(steps),
+        "params_written": params_written,
     }
 
 
@@ -966,9 +1020,9 @@ def handle_plugins_get_name(params: dict) -> dict:
     use_global = params.get("use_global", True)
 
     if slot_index >= 0:
-        name = plugins.getPluginName(index, slot_index, True)
+        name = plugins.getPluginName(index, slot_index, False)
     else:
-        name = plugins.getPluginName(index, -1, use_global)
+        name = plugins.getPluginName(index, -1, False, use_global)
 
     return {"name": name}
 
@@ -1099,10 +1153,10 @@ def handle_plugins_next_preset(params: dict) -> dict:
     use_global = params.get("use_global", True)
 
     if slot_index >= 0:
-        plugin_name = plugins.getPluginName(index, slot_index, True)
+        plugin_name = plugins.getPluginName(index, slot_index, False)
         plugins.nextPreset(index, slot_index, True)
     else:
-        plugin_name = plugins.getPluginName(index, -1, use_global)
+        plugin_name = plugins.getPluginName(index, -1, False, use_global)
         plugins.nextPreset(index, -1, use_global)
 
     return {"plugin_name": plugin_name}
@@ -1115,10 +1169,10 @@ def handle_plugins_prev_preset(params: dict) -> dict:
     use_global = params.get("use_global", True)
 
     if slot_index >= 0:
-        plugin_name = plugins.getPluginName(index, slot_index, True)
+        plugin_name = plugins.getPluginName(index, slot_index, False)
         plugins.prevPreset(index, slot_index, True)
     else:
-        plugin_name = plugins.getPluginName(index, -1, use_global)
+        plugin_name = plugins.getPluginName(index, -1, False, use_global)
         plugins.prevPreset(index, -1, use_global)
 
     return {"plugin_name": plugin_name}
