@@ -2,8 +2,48 @@
 .venv/
 .env
 
-# Local Claude Code settings
+# AI coding agents: local settings, instructions and caches
+# Claude Code
 .claude/
+CLAUDE.md
+CLAUDE.local.md
+# Cross-agent instructions (Codex, Jules, Amp, ...)
+AGENTS.md
+# OpenAI Codex
+.codex/
+# Gemini CLI
+.gemini/
+GEMINI.md
+# Cursor
+.cursor/
+.cursorrules
+.cursorignore
+.cursorindexingignore
+# Windsurf / Codeium
+.windsurf/
+.windsurfrules
+.codeium/
+# GitHub Copilot
+.github/copilot-instructions.md
+.github/instructions/
+.github/prompts/
+# Aider
+.aider*
+# Cline / Roo Code
+.clinerules
+.clinerules/
+.roo/
+.roomodes
+# Continue
+.continue/
+# Kiro
+.kiro/
+# Amazon Q
+.amazonq/
+# Zed
+.rules
+# Codebase indexers used by agents
+.codebase-memory/
 
 # Lockfile (kept out of the repo upstream)
 uv.lock
