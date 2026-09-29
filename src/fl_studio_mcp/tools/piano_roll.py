@@ -6,37 +6,38 @@ tools create persistent notes by communicating with FL Studio's Piano Roll
 scripting API via JSON files.
 
 Communication flow:
-1. MCP server writes requests to mcp_request.json
+1. MCP server appends requests (each with a unique id) to mcp_request.json
 2. Keystroke trigger (Cmd+Opt+Y) executes FL Studio's ComposeWithLLM script
 3. Script reads JSON, modifies piano roll, exports state to piano_roll_state.json
+4. Script writes mcp_response.json listing the request ids it processed
 """
 
 from __future__ import annotations
 
 import json
-import platform
+import threading
+import time
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from fl_studio_mcp.utils.fl_trigger import get_trigger, trigger_fl_studio
+from fl_studio_mcp.utils.fl_trigger import get_trigger
+from fl_studio_mcp.utils.paths import atomic_write_json, get_piano_roll_scripts_dir
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
+# How long to wait for the piano roll script to confirm it processed our requests.
+RESPONSE_TIMEOUT = 5.0
+POLL_INTERVAL = 0.05
+
+# Serializes read-modify-write of the request queue within this process.
+_queue_lock = threading.Lock()
+
 
 def _get_fl_scripts_dir() -> Path:
     """Get the FL Studio Piano Roll scripts directory."""
-    system = platform.system()
-
-    if system in ("Darwin", "Windows"):
-        base = Path.home() / "Documents" / "Image-Line" / "FL Studio" / "Settings"
-    else:
-        # Linux fallback (FL Studio doesn't officially support Linux)
-        base = Path.home() / ".fl-studio" / "Settings"
-
-    scripts_dir = base / "Piano roll scripts"
-    scripts_dir.mkdir(parents=True, exist_ok=True)
-    return scripts_dir
+    return get_piano_roll_scripts_dir()
 
 
 def _get_request_file() -> Path:
@@ -54,32 +55,54 @@ def _get_state_file() -> Path:
     return _get_fl_scripts_dir() / "piano_roll_state.json"
 
 
-def _write_request(request: dict | list) -> None:
-    """Write a request to the MCP request file."""
-    request_file = _get_request_file()
+def _read_json(path: Path) -> object | None:
+    """Read a JSON file, or None if it is missing, locked, or malformed."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, PermissionError, json.JSONDecodeError):
+        return None
 
-    # Read existing requests if any
-    existing = []
-    if request_file.exists():
-        try:
-            with open(request_file) as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    existing = data
-                elif isinstance(data, dict):
-                    existing = [data]
-        except (json.JSONDecodeError, IOError):
-            existing = []
 
-    # Append new request(s)
-    if isinstance(request, list):
-        existing.extend(request)
-    else:
-        existing.append(request)
+def _read_queue() -> list[dict]:
+    data = _read_json(_get_request_file())
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        return [data]
+    return []
 
-    # Write back
-    with open(request_file, "w") as f:
-        json.dump(existing, f, indent=2)
+
+def _write_request(request: dict | list[dict]) -> list[str]:
+    """Append request(s) to the queue, tagging each with a new id.
+
+    Returns:
+        The ids assigned, in order; the piano roll script echoes them back.
+    """
+    new_requests = request if isinstance(request, list) else [request]
+    tagged = [{**r, "id": uuid.uuid4().hex} for r in new_requests]
+
+    with _queue_lock:
+        atomic_write_json(_get_request_file(), [*_read_queue(), *tagged])
+
+    return [r["id"] for r in tagged]
+
+
+def _pending_request_ids() -> list[str]:
+    return [r["id"] for r in _read_queue() if isinstance(r, dict) and r.get("id")]
+
+
+def _wait_for_response(request_ids: list[str], timeout: float) -> dict | None:
+    """Wait until the piano roll script reports it processed all request_ids."""
+    wanted = set(request_ids)
+    deadline = time.monotonic() + timeout
+
+    while time.monotonic() < deadline:
+        response = _read_json(_get_response_file())
+        if isinstance(response, dict) and wanted <= set(response.get("request_ids", [])):
+            return response
+        time.sleep(POLL_INTERVAL)
+
+    return None
 
 
 def _clear_request_file() -> None:
@@ -110,16 +133,40 @@ def _midi_to_note_name(midi: int) -> str:
     return f"{note_name}{octave}"
 
 
-def _get_trigger_info(auto_trigger: bool) -> str:
-    """Attempt to trigger FL Studio and return a status suffix string."""
-    if not auto_trigger:
-        return ""
+def _describe_response(response: dict) -> str:
+    if response.get("status") == "error":
+        return f" FL Studio reported an error: {response.get('message', 'unknown error')}."
+    return (
+        " FL Studio processed the request: "
+        f"{response.get('notes_added', 0)} added, {response.get('notes_deleted', 0)} deleted."
+    )
+
+
+def _trigger_and_wait(request_ids: list[str]) -> str:
+    """Trigger the piano roll script and wait for it to confirm request_ids."""
     trigger = get_trigger()
     if not trigger.is_supported:
         return f" Auto-trigger not supported on {trigger.platform}. Press the trigger key manually."
-    if trigger_fl_studio():
-        return " FL Studio triggered successfully."
-    return f" Warning: Could not trigger FL Studio. Press {trigger.keystroke} manually."
+    if not trigger.trigger(0):
+        return f" Warning: Could not trigger FL Studio. Press {trigger.keystroke} manually."
+    if not request_ids:
+        return " FL Studio triggered (no pending requests)."
+
+    response = _wait_for_response(request_ids, RESPONSE_TIMEOUT)
+    if response is None:
+        return (
+            f" Warning: FL Studio did not respond within {RESPONSE_TIMEOUT}s. Make sure a "
+            "piano roll is open and ComposeWithLLM was run once via Tools > Scripting; "
+            f"the requests stay queued, so press {trigger.keystroke} to retry."
+        )
+    return _describe_response(response)
+
+
+def _get_trigger_info(auto_trigger: bool, request_ids: list[str]) -> str:
+    """Attempt to trigger FL Studio and return a status suffix string."""
+    if not auto_trigger:
+        return ""
+    return _trigger_and_wait(request_ids)
 
 
 def register_piano_roll_tools(mcp: FastMCP) -> None:
@@ -163,25 +210,15 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
             if "duration" not in note:
                 return f"Error: Note {i} missing 'duration' field"
 
-            # Set defaults
-            note.setdefault("time", 0)
-            note.setdefault("velocity", 0.8)
+        # Apply defaults without modifying the caller's dicts
+        notes = [{"time": 0, "velocity": 0.8, **note} for note in notes]
 
-        requests = []
+        clear_first = [{"action": "clear"}] if mode == "replace" else []
+        requests = [*clear_first, {"action": "add_notes", "notes": notes}]
 
-        # If replace mode, clear first
-        if mode == "replace":
-            requests.append({"action": "clear"})
+        request_ids = _write_request(requests)
 
-        # Add notes request
-        requests.append({
-            "action": "add_notes",
-            "notes": notes
-        })
-
-        _write_request(requests)
-
-        trigger_info = _get_trigger_info(auto_trigger)
+        trigger_info = _get_trigger_info(auto_trigger, request_ids)
         note_count = len(notes)
         note_summary = ", ".join(
             f"{_midi_to_note_name(n['midi'])}@{n.get('time', 0)}"
@@ -234,10 +271,10 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
             "notes": chord_notes
         }
 
-        _write_request(request)
+        request_ids = _write_request(request)
 
-        trigger_info = _get_trigger_info(auto_trigger)
-        note_names = ", ".join(_midi_to_note_name(n) for n in midi_notes)
+        trigger_info = _get_trigger_info(auto_trigger, request_ids)
+        note_names =", ".join(_midi_to_note_name(n) for n in midi_notes)
         return f"Queued chord [{note_names}] at beat {time}, duration {duration}.{trigger_info}"
 
     @mcp.tool()
@@ -263,9 +300,9 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
             "action": "delete_notes",
             "notes": notes
         }
-        _write_request(request)
+        request_ids = _write_request(request)
 
-        trigger_info = _get_trigger_info(auto_trigger)
+        trigger_info = _get_trigger_info(auto_trigger, request_ids)
         return f"Queued deletion of {len(notes)} note(s).{trigger_info}"
 
     @mcp.tool()
@@ -275,10 +312,9 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
         Args:
             auto_trigger: Whether to automatically trigger FL Studio
         """
-        request = {"action": "clear"}
-        _write_request(request)
+        request_ids = _write_request({"action": "clear"})
 
-        trigger_info = _get_trigger_info(auto_trigger)
+        trigger_info = _get_trigger_info(auto_trigger, request_ids)
         return f"Queued clear all notes.{trigger_info}"
 
     @mcp.tool()
@@ -324,17 +360,7 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
         This sends the keystroke (Cmd+Opt+Y on macOS, Ctrl+Alt+Y on Windows)
         to FL Studio to execute the ComposeWithLLM piano roll script.
         """
-        trigger = get_trigger()
-
-        if not trigger.is_supported:
-            return f"Error: Auto-trigger not supported on {trigger.platform}"
-
-        success = trigger_fl_studio()
-
-        if success:
-            return "FL Studio triggered successfully. Notes should now appear in the piano roll."
-        else:
-            return f"Failed to trigger FL Studio. Try pressing {trigger.keystroke} manually."
+        return _trigger_and_wait(_pending_request_ids()).strip()
 
     @mcp.tool()
     def fl_get_piano_roll_info() -> dict:

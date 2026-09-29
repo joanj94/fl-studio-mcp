@@ -14,11 +14,53 @@ Based on work from https://github.com/calvinw/fl-studio-mcp
 import flpianoroll as flp
 import json
 import os
+import sys
+import time
+
+
+def get_documents_dir():
+    """The user's Documents folder, following OneDrive/folder redirection on Windows.
+
+    Mirrors fl_studio_mcp.utils.paths.get_documents_dir on the server side.
+    FL's embedded Python may lack ctypes, so any failure falls back to the default.
+    """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            buffer = ctypes.create_unicode_buffer(260)
+            # 5 = CSIDL_PERSONAL (Documents)
+            result = ctypes.windll.shell32.SHGetFolderPathW(None, 5, None, 0, buffer)
+            if result == 0 and buffer.value:
+                return buffer.value
+        except Exception:
+            pass  # Fall through to the default location below.
+    return os.path.join(os.path.expanduser("~"), "Documents")
 
 
 def get_script_dir():
     """Get the directory where this script is located"""
-    return os.path.expanduser("~/Documents/Image-Line/FL Studio/Settings/Piano roll scripts")
+    return os.path.join(
+        get_documents_dir(), "Image-Line", "FL Studio", "Settings", "Piano roll scripts"
+    )
+
+
+def write_json_atomic(path, data, attempts=5, delay=0.02):
+    """Write JSON via a temp file so the MCP server never reads a half-written file.
+
+    The replace is retried: on Windows it fails while the server reads the file.
+    """
+    tmp_path = path + ".tmp"
+    with open(tmp_path, 'w') as f:
+        json.dump(data, f, indent=2)
+    for attempt in range(attempts):
+        try:
+            os.replace(tmp_path, path)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay)
 
 
 REQUEST_FILE = os.path.join(get_script_dir(), "mcp_request.json")
@@ -61,8 +103,7 @@ def export_piano_roll_state():
     }
 
     # Save to file
-    with open(STATE_FILE, 'w') as f:
-        json.dump(export_data, f, indent=2)
+    write_json_atomic(STATE_FILE, export_data)
 
     return STATE_FILE
 
@@ -71,6 +112,9 @@ def process_mcp_request():
     """Check for and process all requests from the MCP server"""
     if not os.path.exists(REQUEST_FILE):
         return None
+
+    # Known before any FL call, so even a failure response names the requests.
+    request_ids = []
 
     try:
         with open(REQUEST_FILE, 'r') as f:
@@ -87,6 +131,10 @@ def process_mcp_request():
 
         if not requests:
             return None
+
+        request_ids = [
+            r.get("id") for r in requests if isinstance(r, dict) and r.get("id")
+        ]
 
         # Process all requests in order
         total_notes = 0
@@ -115,18 +163,24 @@ def process_mcp_request():
                     total_notes += result.get("notes_added", 0)
 
         # Clear the request queue after processing
-        with open(REQUEST_FILE, 'w') as f:
-            f.write("[]")
+        write_json_atomic(REQUEST_FILE, [])
 
         return {
             "status": "success",
             "requests_processed": len(requests),
+            "request_ids": request_ids,
             "notes_added": total_notes,
             "notes_deleted": notes_deleted
         }
 
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        # Drop the batch so a failing request isn't replayed (and partially
+        # re-applied) on every later trigger; the server gets the error instead.
+        try:
+            write_json_atomic(REQUEST_FILE, [])
+        except Exception:
+            pass  # The error response below is what matters.
+        return {"status": "error", "message": str(e), "request_ids": request_ids}
 
 
 def add_chord_to_piano_roll(request):
@@ -270,10 +324,11 @@ def apply(form=None):
         # Silent error handling - no UI shown
         pass
 
-    # Step 3: Write result to response file
-    if result:
-        try:
-            with open(RESPONSE_FILE, 'w') as f:
-                json.dump(result, f, indent=2)
-        except:
-            pass
+    # Step 3: Always write a response so the MCP server stops waiting.
+    # "request_ids" tells the server which of its queued requests were handled.
+    if not result:
+        result = {"status": "idle", "request_ids": []}
+    try:
+        write_json_atomic(RESPONSE_FILE, result)
+    except Exception:
+        pass  # No UI in auto mode; the server reports a timeout instead.

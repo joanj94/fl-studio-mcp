@@ -21,6 +21,7 @@ Communication flow:
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 # FL Studio API modules (available when running inside FL Studio)
@@ -31,24 +32,35 @@ import plugins
 import transport
 
 
+def _get_documents_dir() -> Path:
+    """The user's Documents folder, following OneDrive/folder redirection on Windows.
+
+    Mirrors fl_studio_mcp.utils.paths.get_documents_dir on the server side.
+    FL's embedded Python may lack ctypes, so any failure falls back to the default.
+    """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            buffer = ctypes.create_unicode_buffer(260)
+            # 5 = CSIDL_PERSONAL (Documents)
+            result = ctypes.windll.shell32.SHGetFolderPathW(None, 5, None, 0, buffer)
+            if result == 0 and buffer.value:
+                return Path(buffer.value)
+        except Exception:
+            pass  # Fall through to the default location below.
+        return Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Documents"
+    return Path.home() / "Documents"
+
+
 def _get_script_dir() -> Path:
     """Get the script directory path.
 
     FL Studio's Python environment doesn't support __file__, so we construct
     the path based on the platform's standard FL Studio settings location.
     """
-    if sys.platform == "darwin":
-        # macOS
-        base = Path.home() / "Documents" / "Image-Line" / "FL Studio" / "Settings"
-    elif sys.platform == "win32":
-        # Windows
-        userprofile = os.environ.get("USERPROFILE", "~")
-        base = Path(userprofile) / "Documents" / "Image-Line" / "FL Studio" / "Settings"
-    else:
-        # Linux (unlikely but handle it)
-        base = Path.home() / "Documents" / "Image-Line" / "FL Studio" / "Settings"
-
-    return base / "Hardware" / "FLStudioMCP"
+    settings = _get_documents_dir() / "Image-Line" / "FL Studio" / "Settings"
+    return settings / "Hardware" / "FLStudioMCP"
 
 
 # File paths for JSON communication
@@ -86,40 +98,77 @@ def OnIdle():
 
 
 def execute_pending_command():
-    """Read command from JSON file, execute it, and write response."""
+    """Read command from JSON file, execute it, and write response.
+
+    The response echoes the command's "id" so the server can tell it apart
+    from a stale response to an earlier command.
+    """
+    request_id = None
     response = {"success": False, "error": None}
 
     try:
         # Read command file
         if not COMMAND_FILE.exists():
             response["error"] = "No command file found"
-            write_response(response)
+            write_response(response, request_id)
             return
 
         command_text = COMMAND_FILE.read_text()
         command = json.loads(command_text)
 
+        request_id = command.get("id")
         action = command.get("action", "")
         params = command.get("params", {})
 
-        # Execute command and get result
+        # Execute command and get result; handlers signal failure with an "error" key
         result = dispatch_command(action, params)
-        response = {"success": True, **result}
+        response = {"success": "error" not in result, **result}
 
     except json.JSONDecodeError as e:
         response["error"] = f"Invalid JSON in command file: {e}"
     except Exception as e:
         response["error"] = f"Error executing command: {e}"
 
-    write_response(response)
+    write_response(response, request_id)
 
 
-def write_response(response: dict):
-    """Write response to JSON file."""
+def write_response(response: dict, request_id=None):
+    """Write response to JSON file atomically, tagged with the request id.
+
+    Always writes something: if the result can't be serialized, an error
+    response is written instead so the server doesn't wait until its timeout.
+    """
+    tagged = {**response, "id": request_id}
     try:
-        RESPONSE_FILE.write_text(json.dumps(response, indent=2))
+        text = json.dumps(tagged, indent=2)
+    except (TypeError, ValueError) as e:
+        text = json.dumps({
+            "success": False,
+            "id": request_id,
+            "error": f"Could not serialize FL Studio result: {e}",
+        })
+
+    tmp_file = RESPONSE_FILE.with_name(RESPONSE_FILE.name + ".tmp")
+    try:
+        tmp_file.write_text(text)
+        _replace_with_retry(tmp_file, RESPONSE_FILE)
     except Exception as e:
         print(f"Error writing response: {e}")
+
+
+def _replace_with_retry(src: Path, dst: Path, attempts: int = 5, delay: float = 0.02):
+    """os.replace, retried: on Windows it fails while the MCP server reads dst.
+
+    Mirrors fl_studio_mcp.utils.paths._replace_with_retry on the server side.
+    """
+    for attempt in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay)
 
 
 def dispatch_command(action: str, params: dict) -> dict:

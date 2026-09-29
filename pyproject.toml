@@ -53,8 +53,17 @@ constraint-dependencies = ["cryptography<49"]
 dev = [
     "fl-studio-api-stubs>=37.0",
     "pytest>=8.0",
+    "pytest-cov>=5.0",
     "ruff>=0.8",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["src/fl_studio_mcp", "fl_controller"]
 
 [tool.ruff]
 line-length = 100
