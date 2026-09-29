@@ -85,6 +85,18 @@ def get_connection() -> FLConnection:
     return _connection
 
 
+def call(action: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Send a command and return FL's result, or {"error": ...} if it failed.
+
+    The protocol fields ("success", "id") are dropped so tools can return the
+    result to the AI as-is.
+    """
+    result = get_connection().send_command(action, params or {})
+    if not result.get("success", False):
+        return {"error": result.get("error") or f"FL Studio could not run {action}"}
+    return {k: v for k, v in result.items() if k not in ("success", "id")}
+
+
 def reset_connection() -> None:
     """Reset the connection state to allow reconnection attempts."""
     global _connection

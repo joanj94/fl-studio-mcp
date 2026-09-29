@@ -11,7 +11,9 @@ import types
 from typing import Any, Callable
 from unittest.mock import MagicMock
 
-FL_CONTROLLER_MODULES = ("channels", "midi", "mixer", "plugins", "transport")
+FL_CONTROLLER_MODULES = (
+    "channels", "general", "midi", "mixer", "patterns", "plugins", "transport",
+)
 
 
 class ToolCollector:
@@ -28,6 +30,22 @@ class ToolCollector:
         return register
 
 
+class ScriptedConnection:
+    """Stand-in FL connection: records commands, answers with canned results.
+
+    Results are successful unless the canned result has an "error" key.
+    """
+
+    def __init__(self, results: dict[str, dict] | None = None) -> None:
+        self.results = results or {}
+        self.sent: list[tuple[str, dict]] = []
+
+    def send_command(self, action: str, params: dict | None = None, timeout: float = 2.0):
+        self.sent.append((action, params or {}))
+        result = self.results.get(action, {})
+        return {"success": "error" not in result, "id": "x", **result}
+
+
 class FakeNote:
     """Mirror of flpianoroll.Note with FL's default field values."""
 
@@ -36,6 +54,7 @@ class FakeNote:
         self.time = 0
         self.length = 0
         self.velocity = 0.8
+        self.release = 0.5
         self.pan = 0.5
         self.color = 0
         self.fcut = 0.5

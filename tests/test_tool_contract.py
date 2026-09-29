@@ -17,7 +17,9 @@ import pytest
 from fl_studio_mcp.tools import (
     register_channel_tools,
     register_mixer_tools,
+    register_pattern_tools,
     register_plugin_tools,
+    register_project_tools,
     register_transport_tools,
 )
 from tests.fakes import ToolCollector
@@ -27,6 +29,8 @@ REGISTRARS = (
     register_mixer_tools,
     register_channel_tools,
     register_plugin_tools,
+    register_project_tools,
+    register_pattern_tools,
 )
 
 # Sample values for required parameters, by annotation (annotations are strings
@@ -38,10 +42,11 @@ SAMPLES: dict[str, Any] = {
     "str": "Lead",
     "list[int]": [1, 0, 1, 0],
     "list[bool]": [True, False, True, False],
+    "list[dict]": [{"step": 0, "on": True, "velocity": 1.0}],
 }
 
 # Parameters whose valid values are restricted, by parameter name.
-NAMED_SAMPLES: dict[str, Any] = {"mode": "song"}
+NAMED_SAMPLES: dict[str, Any] = {"mode": "song", "bpm": 140.0}
 
 
 class NumericFLModule(MagicMock):

@@ -102,6 +102,35 @@ def export_piano_roll_state():
     return STATE_FILE
 
 
+# Fields every note must carry, per action. Checked for the whole batch before
+# anything is applied, so a bad request can't leave half a batch in the piano roll.
+REQUIRED_NOTE_KEYS = {
+    "add_notes": ("midi", "duration"),
+    "add_chord": ("midi",),
+    "delete_notes": ("midi", "time"),
+}
+
+
+def validate_request(request):
+    """Raise ValueError if the request can't be applied."""
+    if not isinstance(request, dict):
+        raise ValueError("Each request must be an object")
+    action = request.get("action")
+    if action in ("clear", "read"):
+        return
+    if action not in REQUIRED_NOTE_KEYS:
+        raise ValueError("Unknown piano roll action %r" % action)
+    notes = request.get("notes", [])
+    if not isinstance(notes, list):
+        raise ValueError("%s: 'notes' must be a list" % action)
+    for i, note in enumerate(notes):
+        if not isinstance(note, dict):
+            raise ValueError("%s: note %d must be an object" % (action, i))
+        for key in REQUIRED_NOTE_KEYS[action]:
+            if key not in note:
+                raise ValueError("%s: note %d is missing '%s'" % (action, i, key))
+
+
 def process_mcp_request():
     """Check for and process all requests from the MCP server"""
     if not os.path.exists(REQUEST_FILE):
@@ -130,6 +159,9 @@ def process_mcp_request():
             r.get("id") for r in requests if isinstance(r, dict) and r.get("id")
         ]
 
+        for request in requests:
+            validate_request(request)
+
         # Process all requests in order
         total_notes = 0
         notes_deleted = 0
@@ -143,18 +175,17 @@ def process_mcp_request():
                 for i in range(count - 1, -1, -1):
                     flp.score.deleteNote(i)
                 notes_deleted += count
-            elif action == "delete_notes":
-                result = delete_notes_from_piano_roll(request)
-                if result and result.get("status") == "success":
-                    notes_deleted += result.get("notes_deleted", 0)
-            elif action == "add_chord":
-                result = add_chord_to_piano_roll(request)
-                if result and result.get("status") == "success":
-                    total_notes += result.get("notes_added", 0)
-            elif action == "add_notes":
-                result = add_notes_to_piano_roll(request)
-                if result and result.get("status") == "success":
-                    total_notes += result.get("notes_added", 0)
+            elif action == "read":
+                pass  # Nothing to change; the state is exported after every run.
+            elif action in NOTE_HANDLERS:
+                result = NOTE_HANDLERS[action](request)
+                if result.get("status") != "success":
+                    # Fails the whole batch so the server hears about it.
+                    raise RuntimeError("%s failed: %s" % (action, result.get("message")))
+                total_notes += result.get("notes_added", 0)
+                notes_deleted += result.get("notes_deleted", 0)
+            else:
+                raise ValueError("Unknown piano roll action %r" % action)
 
         # Clear the request queue after processing
         write_json(REQUEST_FILE, [])
@@ -175,6 +206,19 @@ def process_mcp_request():
         except Exception:
             pass  # The error response below is what matters.
         return {"status": "error", "message": str(e), "request_ids": request_ids}
+
+
+# Optional flpianoroll.Note fields copied as-is when a note request includes them.
+# Values are already in FL's units (the server converts, e.g. cents -> pitchofs).
+OPTIONAL_NOTE_FIELDS = (
+    "pan", "release", "slide", "porta", "pitchofs", "muted", "color", "fcut", "fres",
+)
+
+
+def set_optional_note_fields(midi_note, note_data):
+    for field in OPTIONAL_NOTE_FIELDS:
+        if field in note_data:
+            setattr(midi_note, field, note_data[field])
 
 
 def add_chord_to_piano_roll(request):
@@ -209,6 +253,7 @@ def add_chord_to_piano_roll(request):
             note_duration = note_data.get("duration", duration_multiplier)
             midi_note.length = int(ppq * note_duration)
             midi_note.velocity = note_data.get("velocity", 0.8)
+            set_optional_note_fields(midi_note, note_data)
             flp.score.addNote(midi_note)
 
         return {
@@ -286,6 +331,7 @@ def add_notes_to_piano_roll(request):
             midi_note.time = int(ppq * note_time)
             midi_note.length = int(ppq * note_data["duration"])
             midi_note.velocity = note_data.get("velocity", 0.8)
+            set_optional_note_fields(midi_note, note_data)
             flp.score.addNote(midi_note)
 
         return {
@@ -295,6 +341,13 @@ def add_notes_to_piano_roll(request):
 
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+NOTE_HANDLERS = {
+    "add_notes": add_notes_to_piano_roll,
+    "add_chord": add_chord_to_piano_roll,
+    "delete_notes": delete_notes_from_piano_roll,
+}
 
 
 def apply(form=None):

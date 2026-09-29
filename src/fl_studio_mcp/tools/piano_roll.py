@@ -21,6 +21,8 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from fl_studio_mcp.music.model import DEFAULT_VELOCITY
+from fl_studio_mcp.utils.connection import call
 from fl_studio_mcp.utils.fl_trigger import get_trigger
 from fl_studio_mcp.utils.paths import atomic_write_json, get_piano_roll_scripts_dir
 
@@ -30,6 +32,17 @@ if TYPE_CHECKING:
 # How long to wait for the piano roll script to confirm it processed our requests.
 RESPONSE_TIMEOUT = 5.0
 POLL_INTERVAL = 0.05
+
+# Note fields sent to the piano roll script as-is (flpianoroll.Note attributes).
+PASSTHROUGH_NOTE_FIELDS = (
+    "midi", "time", "duration", "velocity", "release", "pan", "slide", "porta", "muted",
+    "color", "fcut", "fres",
+)
+UNIT_NOTE_FIELDS = ("velocity", "release", "pan", "fcut", "fres")  # 0.0-1.0
+FLAG_NOTE_FIELDS = ("slide", "porta", "muted")
+# fine_pitch is given in cents; FL's Note.pitchofs counts tens of cents.
+CENTS_PER_PITCHOFS = 10
+MAX_FINE_PITCH_CENTS = 1200
 
 # Serializes read-modify-write of the request queue within this process.
 _queue_lock = threading.Lock()
@@ -142,25 +155,83 @@ def _describe_response(response: dict) -> str:
     )
 
 
-def _trigger_and_wait(request_ids: list[str]) -> str:
-    """Trigger the piano roll script and wait for it to confirm request_ids."""
+def _trigger(request_ids: list[str]) -> tuple[dict | None, str]:
+    """Trigger the piano roll script and wait for it to confirm request_ids.
+
+    Returns FL's response (None if there is none) and a message for the AI.
+    """
     trigger = get_trigger()
     if not trigger.is_supported:
-        return f" Auto-trigger not supported on {trigger.platform}. Press the trigger key manually."
+        return None, (
+            f" Auto-trigger not supported on {trigger.platform}. Press the trigger key manually."
+        )
     if not trigger.trigger(0):
-        return f" Warning: Could not trigger FL Studio. Press {trigger.keystroke} manually."
+        return None, f" Warning: Could not trigger FL Studio. Press {trigger.keystroke} manually."
     if not request_ids:
-        return " FL Studio triggered (no pending requests)."
+        return None, " FL Studio triggered (no pending requests)."
 
     response = _wait_for_response(request_ids, RESPONSE_TIMEOUT)
     if response is None:
-        return (
+        return None, (
             f" Warning: FL Studio did not respond within {RESPONSE_TIMEOUT}s. Make sure a "
             "piano roll is open and ComposeWithLLM was run once from the piano roll's own "
             "menu (Tools > Scripting); "
             f"the requests stay queued, so press {trigger.keystroke} to retry."
         )
-    return _describe_response(response)
+    return response, _describe_response(response)
+
+
+def _trigger_and_wait(request_ids: list[str]) -> str:
+    return _trigger(request_ids)[1]
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _prepare_note(note: dict) -> dict:
+    """A note in the script's format: defaults added, fine_pitch converted, extras dropped.
+
+    Extra fields are dropped rather than rejected so notes read back with
+    fl_get_piano_roll_state (which carry note_name, time_ticks, ...) can be resent.
+    """
+    prepared = {"time": 0, "velocity": DEFAULT_VELOCITY}
+    prepared.update({key: note[key] for key in PASSTHROUGH_NOTE_FIELDS if key in note})
+
+    for key in UNIT_NOTE_FIELDS:
+        if key in prepared and not (_is_number(prepared[key]) and 0 <= prepared[key] <= 1):
+            raise ValueError(f"'{key}' must be a number from 0.0 to 1.0, got {prepared[key]!r}")
+    for key in FLAG_NOTE_FIELDS:
+        if key in prepared and not isinstance(prepared[key], bool):
+            raise ValueError(f"'{key}' must be true or false, got {prepared[key]!r}")
+    if "fine_pitch" in note:
+        cents = note["fine_pitch"]
+        if not _is_number(cents) or not -MAX_FINE_PITCH_CENTS <= cents <= MAX_FINE_PITCH_CENTS:
+            raise ValueError(
+                f"'fine_pitch' must be -{MAX_FINE_PITCH_CENTS} to {MAX_FINE_PITCH_CENTS} cents, "
+                f"got {cents!r}"
+            )
+        prepared["pitchofs"] = round(cents / CENTS_PER_PITCHOFS)
+    return prepared
+
+
+def _select_target(channel: int | None, pattern: int | None) -> str | None:
+    """Make the channel, then the pattern, active so the piano roll edits them.
+
+    The channel goes first: a bad channel index then fails before the project's
+    current pattern has been switched.
+
+    Returns an error message, or None when the target is selected.
+    """
+    if channel is not None:
+        result = call("channels.selectOne", {"index": channel})
+        if "error" in result:
+            return result["error"]
+    if pattern is not None:
+        result = call("patterns.select", {"index": pattern})
+        if "error" in result:
+            return result["error"]
+    return None
 
 
 def _get_trigger_info(auto_trigger: bool, request_ids: list[str]) -> str:
@@ -177,12 +248,15 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
     def fl_send_notes(
         notes: list[dict],
         mode: str = "add",
-        auto_trigger: bool = True
+        auto_trigger: bool = True,
+        channel: int | None = None,
+        pattern: int | None = None,
     ) -> str:
         """Add or replace notes in the FL Studio piano roll.
 
-        This creates persistent notes in the currently open piano roll pattern.
-        Notes use quarter-note timing for simplicity.
+        Notes go to the selected channel's piano roll in the active pattern, or
+        to `channel`/`pattern` when given (they are selected first). Times are
+        in quarter notes (beats).
 
         Args:
             notes: List of note objects with properties:
@@ -190,15 +264,22 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
                    - duration (float): Length in quarter notes (1.0 = quarter note)
                    - time (float, optional): Start position in quarter notes (default 0)
                    - velocity (float, optional): Velocity 0.0-1.0 (default 0.8)
+                   - pan, release, fcut, fres (float, optional): 0.0-1.0 (pan 0.5 = centre)
+                   - slide, porta, muted (bool, optional)
+                   - fine_pitch (float, optional): detune in cents, -1200 to 1200
+                   - color (int, optional): FL note color/group 0-15
+                   Other fields (e.g. note_name from fl_get_piano_roll_state) are ignored.
             mode: "add" to add notes, "replace" to clear existing notes first
             auto_trigger: Whether to automatically trigger FL Studio (default True)
+            channel: Channel index (0-based) to write to; default: the selected one.
+            pattern: Pattern index (1-based) to write to; default: the active one.
 
         Example notes:
             [
                 {"midi": 60, "duration": 1.0, "time": 0},      # C4 quarter note at beat 0
                 {"midi": 64, "duration": 1.0, "time": 0},      # E4 (chord with C4)
                 {"midi": 67, "duration": 1.0, "time": 0},      # G4 (C major chord)
-                {"midi": 60, "duration": 0.5, "time": 1.0},    # C4 eighth note at beat 1
+                {"midi": 60, "duration": 0.5, "time": 1.0, "slide": True},  # sliding C4
             ]
         """
         if not notes:
@@ -211,8 +292,15 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
             if "duration" not in note:
                 return f"Error: Note {i} missing 'duration' field"
 
-        # Apply defaults without modifying the caller's dicts
-        notes = [{"time": 0, "velocity": 0.8, **note} for note in notes]
+        # New dicts: the caller's notes are never modified
+        try:
+            notes = [_prepare_note(note) for note in notes]
+        except ValueError as e:
+            return f"Error: {e}"
+
+        target_error = _select_target(channel, pattern)
+        if target_error:
+            return f"Error: {target_error}"
 
         clear_first = [{"action": "clear"}] if mode == "replace" else []
         requests = [*clear_first, {"action": "add_notes", "notes": notes}]
@@ -236,7 +324,9 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
         time: float = 0,
         duration: float = 1.0,
         velocity: float = 0.8,
-        auto_trigger: bool = True
+        auto_trigger: bool = True,
+        channel: int | None = None,
+        pattern: int | None = None,
     ) -> str:
         """Add a chord (multiple simultaneous notes) to the FL Studio piano roll.
 
@@ -249,6 +339,8 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
             duration: Length in quarter notes for all notes (default 1.0)
             velocity: Velocity 0.0-1.0 for all notes (default 0.8)
             auto_trigger: Whether to automatically trigger FL Studio
+            channel: Channel index (0-based) to write to; default: the selected one.
+            pattern: Pattern index (1-based) to write to; default: the active one.
 
         Example - C major chord at beat 0:
             fl_send_chord([60, 64, 67], time=0, duration=1.0)
@@ -258,6 +350,10 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
         """
         if not midi_notes:
             return "Error: No MIDI notes provided"
+
+        target_error = _select_target(channel, pattern)
+        if target_error:
+            return f"Error: {target_error}"
 
         # Build chord notes with velocity included
         chord_notes = [
@@ -281,7 +377,9 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
     @mcp.tool()
     def fl_delete_notes(
         notes: list[dict],
-        auto_trigger: bool = True
+        auto_trigger: bool = True,
+        channel: int | None = None,
+        pattern: int | None = None,
     ) -> str:
         """Delete specific notes from the FL Studio piano roll.
 
@@ -290,12 +388,18 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
                    - midi (int): MIDI note number
                    - time (float): Start position in quarter notes
             auto_trigger: Whether to automatically trigger FL Studio
+            channel: Channel index (0-based); default: the selected one.
+            pattern: Pattern index (1-based); default: the active one.
 
         Example:
             [{"midi": 60, "time": 0}, {"midi": 64, "time": 0}]
         """
         if not notes:
             return "Error: No notes specified for deletion"
+
+        target_error = _select_target(channel, pattern)
+        if target_error:
+            return f"Error: {target_error}"
 
         request = {
             "action": "delete_notes",
@@ -307,28 +411,56 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
         return f"Queued deletion of {len(notes)} note(s).{trigger_info}"
 
     @mcp.tool()
-    def fl_clear_piano_roll(auto_trigger: bool = True) -> str:
+    def fl_clear_piano_roll(
+        auto_trigger: bool = True,
+        channel: int | None = None,
+        pattern: int | None = None,
+    ) -> str:
         """Clear all notes from the FL Studio piano roll.
 
         Args:
             auto_trigger: Whether to automatically trigger FL Studio
+            channel: Channel index (0-based); default: the selected one.
+            pattern: Pattern index (1-based); default: the active one.
         """
+        target_error = _select_target(channel, pattern)
+        if target_error:
+            return f"Error: {target_error}"
+
         request_ids = _write_request({"action": "clear"})
 
         trigger_info = _get_trigger_info(auto_trigger, request_ids)
         return f"Queued clear all notes.{trigger_info}"
 
     @mcp.tool()
-    def fl_get_piano_roll_state() -> dict:
-        """Get the current state of notes in the FL Studio piano roll.
+    def fl_get_piano_roll_state(
+        channel: int | None = None,
+        pattern: int | None = None,
+        refresh: bool = False,
+    ) -> dict:
+        """Get the notes in an FL Studio piano roll.
 
         Returns a dictionary containing:
         - ppq: Pulses per quarter note (ticks per beat)
-        - notes: List of all notes with their properties
+        - notes: List of all notes with their properties (times in quarter notes)
 
-        Note: This reads from the last exported state. Trigger FL Studio
-        (Cmd+Opt+Y on macOS) to refresh the state file after making changes.
+        With `channel` or `pattern`, that target is selected and read fresh from
+        FL. Otherwise the state exported by the last piano roll run is returned,
+        unless `refresh` is true.
+
+        Args:
+            channel: Channel index (0-based) to read.
+            pattern: Pattern index (1-based) to read.
+            refresh: Re-read the current piano roll from FL before returning.
         """
+        if channel is not None or pattern is not None or refresh:
+            target_error = _select_target(channel, pattern)
+            if target_error:
+                return {"error": target_error}
+            response, message = _trigger(_write_request({"action": "read"}))
+            if response is None or response.get("status") == "error":
+                return {"error": message.strip()}
+
         state = _read_state()
 
         if state is None:

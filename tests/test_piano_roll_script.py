@@ -5,6 +5,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+EXISTING_PITCH = 50
+
+
+def _add_existing_note(flp) -> None:
+    note = flp.Note()
+    note.number = EXISTING_PITCH
+    flp.score.addNote(note)
+
 
 def _queue(script, requests: list[dict]) -> None:
     Path(script.REQUEST_FILE).write_text(json.dumps(requests))
@@ -125,6 +135,81 @@ def test_files_are_written_without_renaming(piano_roll_script, monkeypatch):
     assert _response(piano_roll_script)["request_ids"] == ["r1"]
     assert json.loads(Path(piano_roll_script.REQUEST_FILE).read_text()) == []
     assert calls == []
+
+
+def test_add_notes_sets_optional_note_properties(piano_roll_script, flp):
+    _queue(piano_roll_script, [{"id": "p", "action": "add_notes", "notes": [
+        {"midi": 60, "duration": 1, "pan": 0.25, "release": 0.3, "slide": True, "porta": True,
+         "pitchofs": -12, "muted": True, "color": 3, "fcut": 0.1, "fres": 0.9},
+    ]}])
+
+    piano_roll_script.apply()
+
+    (note,) = flp.score.notes
+    assert (note.pan, note.release, note.slide, note.porta, note.pitchofs, note.muted,
+            note.color, note.fcut, note.fres) == (0.25, 0.3, True, True, -12, True, 3, 0.1, 0.9)
+
+
+def test_failed_sub_request_fails_the_batch(piano_roll_script, flp):
+    _queue(piano_roll_script, [
+        {"id": "ok", "action": "add_notes", "notes": [{"midi": 60, "duration": 1}]},
+        {"id": "bad", "action": "add_notes", "notes": [{"midi": 62}]},  # no duration
+    ])
+
+    piano_roll_script.apply()
+
+    response = _response(piano_roll_script)
+    assert response["status"] == "error"
+    assert "duration" in response["message"]
+    assert response["request_ids"] == ["ok", "bad"]
+    assert flp.score.notes == []  # checked before anything is applied
+
+
+@pytest.mark.parametrize("bad", [
+    {"action": "add_chord", "notes": [{"duration": 1}]},  # no midi
+    {"action": "delete_notes", "notes": [{"midi": 60}]},  # no time
+    {"action": "add_notes", "notes": "C4"},  # not a list
+    {"action": "add_notes", "notes": [60]},  # not a dict
+])
+def test_invalid_request_later_in_batch_changes_nothing(piano_roll_script, flp, bad):
+    _add_existing_note(flp)
+    _queue(piano_roll_script, [
+        {"id": "c", "action": "clear"},
+        {"id": "ok", "action": "add_notes", "notes": [{"midi": 60, "duration": 1}]},
+        {"id": "bad", **bad},
+    ])
+
+    piano_roll_script.apply()
+
+    assert _response(piano_roll_script)["status"] == "error"
+    assert [n.number for n in flp.score.notes] == [EXISTING_PITCH]
+
+
+def test_unknown_action_fails_the_batch(piano_roll_script, flp):
+    _add_existing_note(flp)
+    _queue(piano_roll_script, [
+        {"id": "c", "action": "clear"},
+        {"id": "u", "action": "transpose_all"},
+    ])
+
+    piano_roll_script.apply()
+
+    response = _response(piano_roll_script)
+    assert response["status"] == "error"
+    assert "transpose_all" in response["message"]
+    assert [n.number for n in flp.score.notes] == [EXISTING_PITCH]
+
+
+def test_read_request_only_exports_state(piano_roll_script, flp):
+    flp.score.addNote(flp.Note())
+    _queue(piano_roll_script, [{"id": "r", "action": "read"}])
+
+    piano_roll_script.apply()
+
+    response = _response(piano_roll_script)
+    assert response["status"] == "success"
+    assert (response["notes_added"], response["notes_deleted"]) == (0, 0)
+    assert json.loads(Path(piano_roll_script.STATE_FILE).read_text())["noteCount"] == 1
 
 
 def test_empty_queue_still_writes_idle_response(piano_roll_script):

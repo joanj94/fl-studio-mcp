@@ -25,8 +25,10 @@ from pathlib import Path
 
 # FL Studio API modules (available when running inside FL Studio)
 import channels
+import general
 import midi
 import mixer
+import patterns
 import plugins
 import transport
 
@@ -243,6 +245,28 @@ def dispatch_command(action: str, params: dict) -> dict:
         return handle_channels_get_step_sequence(params)
     elif action == "channels.setStepSequence":
         return handle_channels_set_step_sequence(params)
+    elif action == "channels.setStepParams":
+        return handle_channels_set_step_params(params)
+    elif action == "channels.getStepParams":
+        return handle_channels_get_step_params(params)
+
+    # Project commands
+    elif action == "project.getTempo":
+        return handle_project_get_tempo()
+    elif action == "project.setTempo":
+        return handle_project_set_tempo(params)
+    elif action == "project.getInfo":
+        return handle_project_get_info()
+
+    # Pattern commands
+    elif action == "patterns.getAll":
+        return handle_patterns_get_all()
+    elif action == "patterns.select":
+        return handle_patterns_select(params)
+    elif action == "patterns.rename":
+        return handle_patterns_rename(params)
+    elif action == "patterns.findEmpty":
+        return handle_patterns_find_empty()
 
     # Plugin commands
     elif action == "plugins.isValid":
@@ -712,6 +736,208 @@ def handle_channels_set_step_sequence(params: dict) -> dict:
         "total_steps": len(pattern),
         "channel_name": channels.getChannelName(channel, True),
     }
+
+
+# FL's step parameter ids (midi.pPitch ... midi.pShift), in raw FL units:
+# pitch = MIDI note, velocity/release/mod/pan 0-128 (pan 64 = centre),
+# fine_pitch 0-240 (120 = 0 cents), shift = ticks. The server converts from
+# friendly units. FL stores shift as the step's absolute tick position
+# (step * PPQ/4 + shift, seen live), so handlers convert to and from relative.
+STEP_PARAMS = {
+    "pitch": 0,
+    "velocity": 1,
+    "release": 2,
+    "fine_pitch": 3,
+    "pan": 4,
+    "mod_x": 5,
+    "mod_y": 6,
+    "shift": 7,
+}
+
+
+def _ticks_per_step() -> int:
+    """Ticks in one step sequencer step (a 16th note)."""
+    return general.getRecPPQ() // 4
+
+
+def handle_channels_set_step_params(params: dict) -> dict:
+    """Set grid bits and step parameters; a given pattern is selected first."""
+    channel = params.get("channel", 0)
+    steps = params.get("steps", [])
+
+    for step in steps:
+        unknown = sorted(set(step) - set(STEP_PARAMS) - {"step", "on"})
+        if unknown:
+            return {"error": f"Unknown step parameter(s) {unknown}; use {sorted(STEP_PARAMS)}"}
+
+    if params.get("pattern") is not None:
+        selected = handle_patterns_select({"index": params["pattern"]})
+        if "error" in selected:
+            return selected
+    pattern = patterns.patternNumber()
+    ticks_per_step = _ticks_per_step()
+
+    written = 0
+    for step in steps:
+        position = step["step"]
+        if "on" in step:
+            channels.setGridBit(channel, position, 1 if step["on"] else 0, True)
+        for name, param_id in STEP_PARAMS.items():
+            if name in step:
+                value = step[name]
+                if name == "shift":
+                    value += position * ticks_per_step
+                channels.setStepParameterByIndex(channel, pattern, position, param_id, value, True)
+                written += 1
+
+    return {
+        "channel_name": channels.getChannelName(channel, True),
+        "pattern": pattern,
+        "steps_written": written,
+    }
+
+
+def handle_channels_get_step_params(params: dict) -> dict:
+    """Grid bits of the current pattern, with every step parameter of active steps."""
+    channel = params.get("channel", 0)
+    ticks_per_step = _ticks_per_step()
+    steps = []
+
+    for position in range(params.get("steps", 16)):
+        on = channels.getGridBit(channel, position, True) == 1
+        step = {"step": position, "on": on}
+        if on:
+            for name, param_id in STEP_PARAMS.items():
+                step[name] = channels.getCurrentStepParam(channel, position, param_id, True)
+            step["shift"] -= position * ticks_per_step
+        steps.append(step)
+
+    return {"pattern": patterns.patternNumber(), "steps": steps}
+
+
+# =============================================================================
+# Project Handlers
+# =============================================================================
+
+
+# Tempo range accepted by FL Studio's tempo control.
+MIN_TEMPO = 10.0
+MAX_TEMPO = 522.0
+
+
+def _is_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _current_bpm() -> float:
+    # Seen live in FL 2026, opposite of the API docs: getCurrentTempo() returns
+    # thousandths of a BPM (150500 = 150.5); getCurrentTempo(True) drops decimals.
+    return mixer.getCurrentTempo() / 1000
+
+
+def handle_project_get_tempo() -> dict:
+    """Get the project tempo in BPM."""
+    return {"bpm": _current_bpm()}
+
+
+def handle_project_set_tempo(params: dict) -> dict:
+    """Set the project tempo in BPM."""
+    bpm = params.get("bpm")
+    if not _is_number(bpm) or not MIN_TEMPO <= bpm <= MAX_TEMPO:
+        return {"error": f"Tempo must be a number from {MIN_TEMPO} to {MAX_TEMPO} BPM, got {bpm!r}"}
+
+    general.processRECEvent(
+        midi.REC_Tempo, int(round(bpm * 1000)), midi.REC_Control | midi.REC_UpdateControl
+    )
+    return {"bpm": _current_bpm()}
+
+
+def handle_project_get_info() -> dict:
+    """Overview of the project: tempo, timebase, patterns, channels, mixer."""
+    ppq = general.getRecPPQ()
+    return {
+        "bpm": _current_bpm(),
+        "ppq": ppq,
+        # getRecPPB is PPQ * beats per bar; it ignores playlist time signature markers.
+        "beats_per_bar": general.getRecPPB() // ppq if ppq else None,
+        "current_pattern": patterns.patternNumber(),
+        "patterns": _used_patterns(),
+        "channels": handle_channels_get_all()["channels"],
+        "mixer_track_count": mixer.trackCount(),
+        "loop_mode": "song" if transport.getLoopMode() == 1 else "pattern",
+    }
+
+
+# =============================================================================
+# Pattern Handlers (patterns are 1-indexed)
+# =============================================================================
+
+
+def _pattern_info(index: int, current: int) -> dict:
+    return {
+        "index": index,
+        "name": patterns.getPatternName(index),
+        "length_beats": patterns.getPatternLength(index),
+        "is_current": index == current,
+    }
+
+
+def _used_patterns() -> list:
+    """Patterns that differ from the default empty state, in index order."""
+    current = patterns.patternNumber()
+    wanted = patterns.patternCount()
+    found = []
+    for index in range(1, patterns.patternMax() + 1):
+        if len(found) >= wanted:
+            break
+        if not patterns.isPatternDefault(index):
+            found.append(_pattern_info(index, current))
+    return found
+
+
+def _check_pattern_index(index):
+    if isinstance(index, bool) or not isinstance(index, int):
+        return f"Pattern index must be an integer, got {index!r}"
+    if not 1 <= index <= patterns.patternMax():
+        return f"Pattern index must be 1-{patterns.patternMax()}, got {index}"
+    return None
+
+
+def handle_patterns_get_all() -> dict:
+    """List used patterns and the active one."""
+    return {"current": patterns.patternNumber(), "patterns": _used_patterns()}
+
+
+def handle_patterns_select(params: dict) -> dict:
+    """Make a pattern active; an unused index creates the pattern."""
+    index = params.get("index")
+    error = _check_pattern_index(index)
+    if error:
+        return {"error": error}
+
+    patterns.jumpToPattern(index)
+    return {"index": index, "name": patterns.getPatternName(index)}
+
+
+def handle_patterns_rename(params: dict) -> dict:
+    """Rename a pattern (default: the active one); an empty name resets it."""
+    index = params.get("index")
+    if index is None:
+        index = patterns.patternNumber()
+    error = _check_pattern_index(index)
+    if error:
+        return {"error": error}
+
+    patterns.setPatternName(index, params.get("name", ""))
+    return {"index": index, "name": patterns.getPatternName(index)}
+
+
+def handle_patterns_find_empty() -> dict:
+    """First pattern index that is still empty (not selected)."""
+    for index in range(1, patterns.patternMax() + 1):
+        if patterns.isPatternDefault(index):
+            return {"index": index}
+    return {"error": "All patterns are in use"}
 
 
 # =============================================================================
