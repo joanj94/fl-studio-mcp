@@ -1,0 +1,172 @@
+"""Rendering the project to a WAV file through FL Studio's own export dialog.
+
+The scripting API can't export audio, so this walks File > Export > Wave file,
+fills in the Save dialog and starts the render window. Every click and key is
+posted to FL's own windows (`fl_windows`), so FL stays in the background and
+nothing is typed into another program. Each window is waited for before the
+next step, and the render is done when the render window has closed and the
+file exists. Windows only.
+"""
+
+from __future__ import annotations
+
+import logging
+import platform
+import time
+from pathlib import Path
+
+from fl_studio_mcp.utils import fl_windows
+from fl_studio_mcp.utils.fl_trigger import keyboard_lock
+
+logger = logging.getLogger(__name__)
+
+WINDOW_TIMEOUT = 5.0  # seconds for a menu or dialog to open
+POLL_INTERVAL = 0.05
+# End goes to the File menu's last entry, Exit; above it are Revert to last backup
+# and then Export. Neither of the first two has a submenu, so Right opening one
+# confirms the walk. "Wave file..." is the Export submenu's first entry (Home).
+# Home and End work from wherever the highlight is: the mouse pointer moves it.
+UPS_FROM_EXIT_TO_EXPORT = 2
+RESTORE_DELAY = 0.5  # seconds FL gets to draw its window after being un-minimized
+
+
+class RenderError(Exception):
+    """The render could not be started or did not finish; the message says why."""
+
+
+def _wait_until(done, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while True:
+        if done():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(POLL_INTERVAL)
+
+
+def _wait_for(class_name: str, count: int, timeout: float) -> bool:
+    """Wait until FL has exactly `count` windows of a class."""
+    return _wait_until(lambda: fl_windows.window_count(class_name) == count, timeout)
+
+
+def _wait_for_menus(count: int) -> bool:
+    return _wait_until(lambda: fl_windows.popup_menu_count() == count, WINDOW_TIMEOUT)
+
+
+def _busy() -> str | None:
+    """What is in the way of starting a render, or None."""
+    message = fl_windows.open_message()
+    if message is not None:
+        return f"FL Studio is showing a message box ({message!r}); fl_close_message closes it"
+    if fl_windows.popup_menu_count():
+        return "a menu is open in FL Studio"
+    if fl_windows.window_count(fl_windows.SYSTEM_DIALOG_CLASS):
+        return "a dialog is open in FL Studio"
+    if fl_windows.window_count(fl_windows.RENDER_WINDOW_CLASS):
+        return "FL Studio's render window is already open"
+    return None
+
+
+def _submenu_opened_low() -> bool:
+    """True if the open submenu starts in the File menu's lower half, where Export is.
+
+    The entries can't be read. Seen live: the submenus near the top of the File
+    menu are the ones that open other projects, and a submenu opens level with
+    its entry.
+    """
+    menus = fl_windows.popup_menu_rects()
+    if len(menus) != 2:
+        return False
+    (_, top, _, bottom), (_, submenu_top, _, _) = menus
+    return submenu_top > (top + bottom) / 2
+
+
+def _open_save_dialog() -> None:
+    """File > Export > Wave file: leaves FL's Save dialog open."""
+    if not fl_windows.click_main_menu() or not _wait_for_menus(1):
+        raise RenderError("FL Studio's File menu did not open")
+    for key in [fl_windows.VK_END] + [fl_windows.VK_UP] * UPS_FROM_EXIT_TO_EXPORT:
+        if not fl_windows.press_in_popup_menu(key, menus=1):
+            raise RenderError("FL Studio's File menu closed unexpectedly")
+    if not fl_windows.press_in_popup_menu(fl_windows.VK_RIGHT, menus=1) or not _wait_for_menus(2):
+        raise RenderError("The Export submenu was not where it was expected in the File menu")
+    if not _submenu_opened_low():
+        raise RenderError(
+            "The submenu that opened is not where the File menu's Export entry is, so nothing "
+            "was chosen in it"
+        )
+    if not fl_windows.press_in_popup_menu(fl_windows.VK_HOME, menus=2):
+        raise RenderError("FL Studio's Export menu closed unexpectedly")
+    if fl_windows.pointer_over_menu():
+        raise RenderError(
+            "The mouse pointer is over FL Studio's menu, where it moves the highlight, so "
+            "the export was not started. Try again with the pointer elsewhere."
+        )
+    if not fl_windows.press_in_popup_menu(fl_windows.VK_RETURN, menus=2):
+        raise RenderError("FL Studio's Export menu closed unexpectedly")
+    if not _wait_for(fl_windows.SYSTEM_DIALOG_CLASS, 1, WINDOW_TIMEOUT):
+        raise RenderError("FL Studio's export dialog did not open")
+
+
+def _clean_up() -> None:
+    """Close whatever the export left open, so FL isn't left blocked."""
+    fl_windows.close_popup_menus()
+    fl_windows.cancel_dialogs()
+    fl_windows.close_windows(fl_windows.RENDER_WINDOW_CLASS)
+
+
+def render_wav(path: Path, timeout: float) -> float:
+    """Render what FL would play (pattern or song, per its mode) to `path`.
+
+    `path` must not exist yet, so FL never asks to overwrite. Returns the
+    seconds the render took. Raises RenderError with the reason otherwise.
+    """
+    if platform.system() != "Windows":
+        raise RenderError("Rendering is only supported on Windows")
+    if path.exists():
+        raise RenderError(f"{path} already exists; pick another file name")
+    if not path.parent.is_dir():
+        raise RenderError(f"The folder {path.parent} does not exist")
+
+    with keyboard_lock:
+        rendering = False
+        try:
+            if fl_windows.restore_if_minimized():
+                time.sleep(RESTORE_DELAY)
+            busy = _busy()
+            if busy:
+                raise RenderError(f"Cannot start a render while {busy}")
+            try:
+                _open_save_dialog()
+                # The dialog's window shows up before its file name box does.
+                if not _wait_until(
+                    lambda: fl_windows.confirm_dialog_with_file_name(str(path)), WINDOW_TIMEOUT
+                ):
+                    raise RenderError("The file name could not be put into FL Studio's dialog")
+                if not _wait_for(fl_windows.RENDER_WINDOW_CLASS, 1, WINDOW_TIMEOUT):
+                    raise RenderError(
+                        "FL Studio's render window did not open (is the path one FL can write to?)"
+                    )
+                started = time.monotonic()
+                if not fl_windows.press_in_window(
+                    fl_windows.RENDER_WINDOW_CLASS, fl_windows.VK_RETURN
+                ):
+                    raise RenderError("FL Studio's render window closed unexpectedly")
+                rendering = True
+                if not _wait_for(fl_windows.RENDER_WINDOW_CLASS, 0, timeout):
+                    raise RenderError(f"The render did not finish within {timeout:.0f} s")
+            except Exception:
+                if not rendering:  # a render that is only slow is left to finish
+                    try:
+                        _clean_up()
+                    except Exception:  # the failure being reported matters more
+                        logger.exception("Could not close what the export left open")
+                raise
+        except RenderError:
+            raise
+        except Exception as e:
+            raise RenderError(f"Could not drive FL Studio's export dialog: {e}") from e
+
+    if not path.is_file():
+        raise RenderError(f"FL Studio closed its render window but {path} was not written")
+    return time.monotonic() - started

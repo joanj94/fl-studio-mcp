@@ -12,8 +12,8 @@ Requirements:
 - For piano roll: ComposeWithLLM.pyscript installed in FL Studio
 
 Limitations:
-- Cannot load new plugins (only control existing ones)
-- Cannot place pattern clips in the playlist or create automation
+- Loading sounds, placing playlist clips and rendering work on Windows only
+- Cannot create automation
 """
 
 from __future__ import annotations
@@ -21,6 +21,10 @@ from __future__ import annotations
 from fastmcp import FastMCP
 
 from fl_studio_mcp.tools import (
+    register_arrange_tools,
+    register_audio_tools,
+    register_browser_tools,
+    register_channel_setup_tools,
     register_channel_tools,
     register_mixer_tools,
     register_music_tools,
@@ -28,7 +32,11 @@ from fl_studio_mcp.tools import (
     register_piano_roll_tools,
     register_plugin_tools,
     register_project_tools,
+    register_roles_tools,
+    register_screen_tools,
+    register_style_tools,
     register_transport_tools,
+    register_tuning_tools,
 )
 from fl_studio_mcp.utils.connection import get_connection, reset_connection
 
@@ -41,26 +49,60 @@ FL Studio MCP Server - Control FL Studio from AI assistants.
 This server provides tools to control FL Studio through its Python scripting API.
 FL Studio must be running with the "FL Studio MCP Controller" MIDI script enabled.
 Start with fl_get_project_overview to see tempo, patterns and channels.
+Channels can be addressed by role: a word from the channel's name ("kick" finds
+"808 Kick"). fl_get_roles lists them; fl_check_roles checks a project has the
+parts you need. Note and step tools accept a role wherever they take a channel.
 
 Available tool categories:
 - Project: Overview, tempo (fl_get_project_overview, fl_set_tempo)
 - Patterns: List, select (an unused index creates the pattern), rename, find empty
+- Roles: fl_get_roles, fl_check_roles
+- Styles (style_*): optional style packs with tempo range, scales, roles, song
+  structure, rhythm grids, progressions and guidance. style_list, style_get,
+  style_check_project. Treat them as starting points; the user's ideas win.
 - Transport: Play, stop, record, position control
 - Mixer: Volume, pan, mute, solo, track management
 - Channels: Channel info, note triggering, step sequencer incl. per-step pitch,
   velocity and pan (fl_set_step_params)
-- Plugins: Parameter control, preset navigation (cannot load new plugins)
+- Sounds (Windows): fl_browser_search finds samples and presets by name
+  ("kick 909", "sytrus pad"); fl_browser_list shows what FL's browser holds (stock "Packs",
+  the user's own sample folders, "Channel presets", "Plugin presets", "Plugin
+  database"). fl_load_in_new_channel makes a channel from a sample, preset or
+  plugin; fl_load_in_channel replaces a channel's sound; fl_add_effect puts an
+  effect on a mixer track; fl_add_channel adds a plugin by name. Name channels
+  after their role. fl_undo takes back a channel or effect.
+- Plugins: Parameter control, preset navigation
 - Piano roll: Write, delete and read persistent notes (fl_send_notes, ...). Pass
   channel/pattern to aim at a roll; notes may carry pan, slide, porta, fine_pitch
   (cents) and more.
+- Song: write every part as its own pattern (kick, tops, lead riff, chords...),
+  then fl_arrange lays them out in the playlist: sections of patterns playing
+  together, one playlist track per pattern, FL in song mode. Don't write a
+  whole song into one pattern. fl_get_playlist and fl_screenshot("playlist")
+  show the result.
+- Feedback: fl_screenshot shows FL's window (clips, message boxes, anything
+  the other tools can't tell).
+  fl_render renders what FL would play to a WAV and returns measurements
+  (loudness, peaks, frequency balance, stereo image, key, loudness over time);
+  audio_analyze measures any WAV. fl_render_stems renders each channel on its
+  own, to see which part is too loud, clips, or crowds a frequency range. You
+  can't hear the result, so use them to check your work: render, read the
+  numbers, adjust levels, sounds or notes, render again.
+- Tuning: fl_measure_pitch plays one note on a channel alone and tells which
+  pitch comes out. Do it for every pitched sound you load (kicks included)
+  and write its notes transposed by what it reports, so all parts share a key.
 - Music (music_*): Build notes from scales, chords, roman numerals, scale degrees,
   rhythm grids and rolls, and transform them (arpeggiate, transpose, humanize, ...).
   These don't touch FL Studio; their output goes straight into fl_send_notes.
   Call music_reference once to see the vocabulary. Pitch names use C4 = MIDI 60.
 
 Important limitations:
-1. Cannot load new VST/AU plugins - only control existing ones
-2. Cannot place pattern clips in the playlist or create automation
+1. Loading sounds and rendering work on Windows only; loading only for what FL's
+   browser shows.
+   Channels and effects can't be deleted, only undone right away (fl_undo).
+2. Playlist clips are placed by fl_arrange only (whole patterns on bar lines,
+   the whole playlist at once); single clips can't be moved or read, and
+   automation can't be created.
 3. Note triggering (fl_trigger_note) is real-time only - notes won't persist
    unless FL Studio is recording. Use step sequencer (fl_set_grid_bit) for
    persistent drum patterns.
@@ -152,11 +194,19 @@ def fl_connection_status() -> dict:
 register_transport_tools(mcp)
 register_mixer_tools(mcp)
 register_channel_tools(mcp)
+register_channel_setup_tools(mcp)
+register_browser_tools(mcp)
 register_plugin_tools(mcp)
 register_piano_roll_tools(mcp)
+register_arrange_tools(mcp)
+register_audio_tools(mcp)
 register_music_tools(mcp)
 register_project_tools(mcp)
 register_pattern_tools(mcp)
+register_roles_tools(mcp)
+register_style_tools(mcp)
+register_tuning_tools(mcp)
+register_screen_tools(mcp)
 
 
 def main():

@@ -4,7 +4,7 @@ An MCP (Model Context Protocol) server that lets AI assistants control FL Studio
 
 This is a fork of [karl-andres/fl-studio-mcp](https://github.com/karl-andres/fl-studio-mcp). The goal is a **genre-agnostic toolkit** that any MCP-compatible AI can use to write any melody or style in FL Studio. The server provides precise, musically-expressed building blocks, and the AI makes the musical decisions. Hardcore/hardstyle is the first style used to test it; no genre logic lives in the server code.
 
-> **Status:** early development. The foundation, the music toolkit and the extra FL control (tempo, patterns, targeted notes) are done; instrument roles and style packs are next. See [Roadmap](#roadmap).
+> **Status:** early development. The foundation, music toolkit, FL control (tempo, patterns, targeted notes), roles and style packs are done; render and analysis is next. See [Roadmap](#roadmap).
 
 ## Features
 
@@ -13,6 +13,18 @@ This is a fork of [karl-andres/fl-studio-mcp](https://github.com/karl-andres/fl-
 - One-call project overview: tempo, PPQ, time signature, patterns, channels, mixer track count, loop mode
 - Get/set tempo (decimals allowed)
 - List, select, rename patterns and find an empty one (selecting an unused pattern number creates it)
+
+### Style Packs
+
+- Optional JSON files describing a style in the toolkit's vocabulary: tempo range, scales, roles, song structure, rhythm grids, chord progressions and guidance
+- Built in: hardstyle, hardcore and lo-fi hip hop (a deliberately different style, to keep the core generic); add your own in a folder of your choice
+- Check whether the open project fits a style (tempo in range, required roles present)
+
+### Roles
+
+- Address a channel by a word in its name instead of its index: `"kick"` finds "808 Kick", `"sub bass"` finds "Sub Bass"
+- Every note and step tool accepts a role wherever it takes a channel
+- Check that a project has the parts a piece needs before writing (`fl_check_roles`)
 
 ### Transport Control
 
@@ -45,8 +57,17 @@ This is a fork of [karl-andres/fl-studio-mcp](https://github.com/karl-andres/fl-
 
 - List plugin parameters
 - Get/set parameter values
-- Navigate presets (next/previous)
+- Navigate presets (next/previous) and list their names
 - Query plugin info
+
+### Sounds from the Browser (Windows)
+
+- **Browse** FL Studio's browser: stock packs, your own sample folders, presets, the plugin database
+- **Load a sample, preset or instrument plugin** into a new channel, or into an existing one
+- **Add effects** to any mixer track
+- **Undo**, to take back a channel or effect
+- None of this needs FL Studio in front: nothing is typed and the mouse isn't moved
+- **Mix by numbers:** set a mixer track's level in dB, switch effects on and off, and render every channel on its own to see what it adds
 
 ### Piano Roll Control
 
@@ -57,7 +78,7 @@ This is a fork of [karl-andres/fl-studio-mcp](https://github.com/karl-andres/fl-
 - **Read piano roll state** to see all existing notes (fresh from FL, not a stale export)
 - **Target any channel and pattern**: every note tool takes optional `channel` and `pattern`
 - **Full note properties**: velocity, release, pan, slide, porta, muted, colour, filter cutoff/resonance and `fine_pitch` in cents
-- Auto-triggering via keystroke (Cmd+Opt+Y on macOS, Ctrl+Alt+Y on Windows), with confirmation from FL Studio of what was applied
+- Runs the piano roll script for you and reports what FL Studio applied. On Windows this goes through the piano roll's menu with FL Studio left in the background; on macOS FL Studio comes to the front for a keystroke (Cmd+Opt+Y)
 
 ### Music Toolkit
 
@@ -82,6 +103,8 @@ Compared with upstream, this fork currently adds:
 - **OneDrive-aware paths:** the real Windows Documents folder is used everywhere (server, FL-side scripts, installer), so redirected Documents folders work.
 - **FL Studio 2026 support:** the FL-side scripts no longer use `os.replace`, which breaks FL 2026's embedded Python.
 - **More FL control:** tempo, project overview, patterns, per-step parameters, and piano roll notes aimed at a chosen channel and pattern with full note properties.
+- **Things the API can't do (Windows):** loading samples, presets, instrument plugins and effects from FL's browser, and running the piano roll script, all without FL Studio coming to the front: the browser is driven through the API, and the few clicks and keys needed are posted to FL's own menus. Rendering to WAV goes through FL's own export dialog the same way. Every step is checked (the expected menu, dialog or window must be open) before the next one.
+- **Arrangement and feedback:** `fl_arrange` lays a song out in the playlist (one playlist track per pattern, clips placed section by section), `fl_render` / `audio_analyze` measure the result (loudness, peaks, frequency balance, stereo image, key), and `fl_screenshot` shows FL's window.
 - **Test suite:** pytest with the FL Studio API faked, so it runs without FL Studio. It includes a contract test that checks every tool against the FL-side controller script.
 
 ## Roadmap
@@ -89,16 +112,17 @@ Compared with upstream, this fork currently adds:
 1. **Foundation**: reliable protocol, tests, port and path handling. ✅
 2. **Generic music toolkit** (pure Python): notes in musical units, scales and modes, chord symbols and roman numerals, scale-degree melodies, rhythm grids and Euclidean rhythms, rolls, transforms (arpeggiate, transpose, quantize, swing, humanize, ...). ✅
 3. **More FL control**: tempo, project overview, pattern selection, per-step parameters, writing notes into a specific channel and pattern, and full note properties (slide, porta, pan, fine pitch). ✅
-4. **Roles and templates**: refer to instruments by role (`"kick"`, `"lead"`, …) instead of channel numbers, based on a template project you prepare.
-5. **Style packs**: optional data and prompt files describing a genre (tempo range, structure, idioms); hardstyle and hardcore first, plus one very different genre to keep the core generic.
-6. **Render and analysis** (optional): render via FL's command line and give the AI feedback on loudness, spectrum and key.
+4. **Roles and templates**: refer to instruments by role (`"kick"`, `"lead"`, …) instead of channel numbers, based on a template project you prepare. ✅
+5. **Style packs**: optional data files describing a genre (tempo range, structure, idioms); hardstyle, hardcore and lo-fi hip hop to start, the last one to keep the core generic. ✅
+6. **Render and analysis**: render through FL's export dialog and give the AI feedback on loudness, peaks, frequency balance, stereo image and key. ✅
 
 ## Important Limitations
 
 These come from FL Studio's scripting API, not from this server:
 
-- **Cannot load plugins.** You can only control parameters of plugins already loaded in your project, so start from a template project that contains the instruments you want.
-- **Cannot place pattern clips in the playlist or create automation.** Patterns can be created (by selecting an unused number) and filled, but arranging them in the playlist is up to you.
+- **The API can't load anything or create channels.** On Windows the server does it through FL's browser instead (`fl_load_in_new_channel`, `fl_load_in_channel`, `fl_add_effect`, `fl_add_channel`): it moves the browser's cursor to the file and picks "Open in new channel" or "Send to selected channel" from the file's menu. That covers everything the browser shows, which excludes sounds that live inside a plugin's own preset browser (third-party synths, FLEX packs other than the loaded one). Channels and effects can't be deleted, only undone (`fl_undo`). On macOS none of this works: start from a template project that has the instruments you want.
+- **Playlist clips are placed by `fl_arrange` only** (whole patterns on bar lines, the whole playlist at once, Windows); single clips can't be moved or read. **Automation can't be created.**
+- **Loading and rendering are Windows-only, and you will see FL's menus and dialogs flash.** They never take the keyboard, the mouse or the focus, so you can keep working in another program. The loading tools close FL's open plugin windows (FL would otherwise load into the plugin whose window is open), leave the browser's folders closed, and un-minimize FL Studio if it is minimized (behind your other windows, without focus).
 - **Time signature is read-only.** The overview reports it; set it in FL Studio yourself.
 - **Real-time notes aren't saved.** `fl_trigger_note` plays a note live; it only ends up in the project if FL Studio is recording. Use the piano roll or step sequencer tools to write notes permanently.
 
@@ -161,7 +185,7 @@ Both installers will:
 5. Install the Piano Roll script (ComposeWithLLM)
 6. Configure Claude Desktop or Claude Code
 
-> **Windows piano-roll note:** the Piano Roll script is launched by sending FL Studio a keystroke (`Ctrl+Alt+Y`). This needs the FL Studio window in the foreground, so **FL Studio will pop to the front for a moment** each time a piano roll tool runs. This is expected.
+> **Piano-roll note:** on Windows the Piano Roll script is run from the piano roll's menu with FL Studio left in the background; you'll see that menu flash. If that isn't possible (no piano roll showing, or scripts kept in sub-folders) and on macOS, FL Studio is sent a keystroke instead (`Ctrl+Alt+Y` / `Cmd+Opt+Y`), which makes **FL Studio pop to the front for a moment**.
 
 ## Manual Installation
 
@@ -170,6 +194,7 @@ Both installers will:
 ```bash
 # Using uv (recommended; on Windows add --python 3.12)
 uv sync
+# Without the dev tools, add the audio analysis extra: uv sync --no-dev --extra analysis
 
 # Or using pip
 pip install -e .
@@ -216,7 +241,7 @@ cp fl_controller/device_FLStudioMCP.py "$SETTINGS/Hardware/FLStudioMCP/"
 cp scripts/ComposeWithLLM.pyscript "$SETTINGS/Piano roll scripts/"
 ```
 
-After pulling changes to either script, copy it again and restart FL Studio (or reload the script); FL runs the installed copy, not the one in this repo.
+After pulling changes to either script, copy it again; FL runs the installed copy, not the one in this repo. The piano roll script is re-read each time it runs. For the controller, reload it once from FL (View > Script output > Reload script); once it's installed, later updates can also be applied with the `dev.reloadScript` command (see Development), which makes it re-run its installed file.
 
 ### 4. Configure FL Studio
 
@@ -228,7 +253,7 @@ After pulling changes to either script, copy it again and restart FL Studio (or 
 
 The port only needs to be enabled under **Input**. Leave it alone under **Output**: the server sends to FL Studio, never the other way.
 
-For the piano roll tools, also open a pattern's piano roll and run **Tools > Scripting > ComposeWithLLM** from the piano roll window's own menu once per FL session (see [Piano Roll Workflow](#piano-roll-workflow)).
+The piano roll tools need **Tools > Scripting > ComposeWithLLM** to have been run once per FL session from the piano roll window's own menu. On Windows the server does that itself the first time a note tool gets no answer; on macOS do it by hand (see [Piano Roll Workflow](#piano-roll-workflow)).
 
 ### 5. Configure Your MCP Client
 
@@ -254,6 +279,8 @@ Set these in the MCP server entry's `env` block if you need them:
 | Variable | Purpose |
 |----------|---------|
 | `FL_MCP_MIDI_PORT` | MIDI output port to use (exact name or case-insensitive substring). Without it, the server picks the first port whose name contains `loopMIDI`, `IAC` or `FL`, and refuses to guess otherwise. |
+| `FL_MCP_STYLES_DIR` | Folder with your own style packs (`*.json`). A pack with the same name as a built-in one replaces it. |
+| `FL_MCP_RENDER_DIR` | Folder `fl_render` writes to by default. The default is `fl-studio-mcp` in the system's temp folder. |
 | `FL_MCP_SETTINGS_DIR` | Full path to FL Studio's `Settings` folder, if you changed FL's user data folder. The default is `<Documents>\Image-Line\FL Studio\Settings`. |
 
 ## Usage
@@ -268,9 +295,38 @@ uv run fl-studio-mcp
 
 1. Open FL Studio and select a channel
 2. Open the Piano Roll (F7 or double-click the channel)
-3. The first time in each FL session, run the script manually from the **piano roll's own menu** (the ▸ arrow in the piano roll window's top-left corner): **Tools > Scripting > ComposeWithLLM**. FL's main Tools menu in the top bar is a different menu and doesn't list piano roll scripts
-4. After that, the MCP tools trigger the script automatically and report what FL Studio applied
-5. The script writes to the **selected** channel's piano roll in the **selected** pattern. Pass `channel` and `pattern` to the note tools and they select both first
+3. On Windows the server runs the script itself, every time, from the piano roll's menu. On macOS the first run in each FL session is yours, because the shortcut only re-runs the last script: use the **piano roll's own menu** (the ▸ arrow in the piano roll window's top-left corner): **Tools > Scripting > ComposeWithLLM**. FL's main Tools menu in the top bar is a different menu and doesn't list piano roll scripts
+4. The MCP tools then report what FL Studio applied
+5. The script edits the channel the piano roll window shows, in the current pattern. Pass `channel` (an index or a role) and `pattern` to the note tools and they switch the piano roll there first. You'll see the window briefly close and reopen
+
+### Style Packs
+
+A style pack is a JSON file in `src/fl_studio_mcp/styles/` (built in) or in the folder named by `FL_MCP_STYLES_DIR` (yours). The file name must match its `name`. Packs are starting points for the AI, not rules, and nothing about any style is hard-coded in the server. Fields:
+
+| Field | Content |
+|-------|---------|
+| `name`, `title`, `description` | Identifier (lowercase, `-` separated), display name, one-paragraph summary |
+| `tempo` | `min`, `max`, `typical` BPM |
+| `time_signature` | e.g. `"4/4"` |
+| `scales` | Scale names from `music_reference` |
+| `roles` | `required` and `optional` role names, matched against channel names like any role |
+| `structure` | Sections with `section`, `bars`, `description` |
+| `rhythms` | `name`, `role`, `grid` (music_rhythm grid syntax, 16 steps = one 4/4 bar of 16ths), `description` |
+| `progressions` | `chords` (roman numerals or chord symbols), `scale`, `description` |
+| `guidance` | List of plain-text tips |
+
+Every pack is checked when loaded: unknown scales, grids that don't parse, progressions that don't resolve or rhythms for undeclared roles are reported by `style_list` instead of reaching the AI. Edits apply on the next call; no restart needed.
+
+### Preparing a Template Project
+
+On Windows the AI can load samples, presets, plugins and effects from FL's browser by itself, so a template is optional there: add your sample folders to the browser (Options > File settings) and it can use them. A template still saves time, is the only way on macOS, and is how to give the AI sounds the browser doesn't show (third-party synth presets). Set up a project once and reuse it:
+
+1. Add a channel for each part you want the AI to write (drums, bass, lead, pads, effects…) and load your instruments and presets.
+2. **Name each channel after its role**, such as "Kick", "Sub Bass" or "Lead". A role matches whole words in a name, ignoring case and punctuation: "Kick" finds "Kick" or "808 Kick", "bass" finds "Sub Bass" but not "Bassline". An exact name always wins, so if both "Kick" and "Kick Top" exist, "kick" means "Kick". Two channels that match equally (for example two named "Pad") are reported as ambiguous, never guessed.
+3. Route each channel to its own mixer track if you want the AI to mix parts separately.
+4. Save it as a template. FL Studio lists projects saved under `Documents\Image-Line\FL Studio\Projects\Templates\<Category>\<Name>\<Name>.flp` in **File > New from template**.
+
+Ask the AI to run `fl_get_roles` to see what it can address, or `fl_check_roles` with the parts it needs.
 
 ## Available Tools
 
@@ -298,6 +354,13 @@ uv run fl-studio-mcp
 | `fl_rename_pattern` | Rename a pattern (current one by default) |
 | `fl_find_empty_pattern` | Lowest unused pattern number |
 
+### Roles
+
+| Tool | Description |
+|------|-------------|
+| `fl_get_roles` | Channels addressable by role, with mixer track and plugin |
+| `fl_check_roles` | Which of a list of roles the project has (found / missing / ambiguous) |
+
 ### Transport
 
 | Tool | Description |
@@ -319,6 +382,7 @@ uv run fl-studio-mcp
 | `fl_get_mixer_track_info` | Get track details |
 | `fl_get_all_mixer_tracks` | List all tracks |
 | `fl_set_track_volume` | Set track volume |
+| `fl_set_track_volume_db` | Set a mixer track's level in dB |
 | `fl_set_track_pan` | Set track pan |
 | `fl_mute_track` | Mute/unmute track |
 | `fl_solo_track` | Solo/unsolo track |
@@ -337,6 +401,9 @@ uv run fl-studio-mcp
 | `fl_get_selected_channel` | Get selected channel |
 | `fl_select_channel` | Select/deselect channel |
 | `fl_select_one_channel` | Select channel exclusively |
+| `fl_list_generators` | Instrument plugins `fl_add_channel` can load (from FL's plugin database) |
+| `fl_add_channel` | Add a channel with an instrument plugin, optionally named (Windows) |
+| `fl_show_channel_editor` | Show/hide a channel's plugin window |
 | `fl_trigger_note` | Trigger MIDI note (real-time) |
 | `fl_set_channel_volume` | Set channel volume |
 | `fl_set_channel_pan` | Set channel pan |
@@ -350,7 +417,7 @@ uv run fl-studio-mcp
 | `fl_get_step_sequence` | Get full pattern |
 | `fl_set_step_sequence` | Set full pattern |
 | `fl_set_step_params` | Turn steps on/off and set pitch, velocity, release, fine pitch, pan, mod X/Y, shift (optionally in a given pattern) |
-| `fl_get_step_params` | Read steps back with their parameters |
+| `fl_get_step_params` | Read steps back with their parameters (optionally from a given pattern) |
 
 ### Plugins
 
@@ -363,9 +430,26 @@ uv run fl-studio-mcp
 | `fl_get_plugin_param_value` | Get parameter value |
 | `fl_set_plugin_param_value` | Set parameter value |
 | `fl_get_preset_count` | Get preset count |
+| `fl_list_presets` | Names of a plugin's own presets |
 | `fl_next_preset` | Next preset |
 | `fl_prev_preset` | Previous preset |
 | `fl_get_plugin_color` | Get plugin color |
+
+A channel's plugin can be addressed by role (`"lead"`) as well as by channel index; mixer effects are addressed by track number and slot.
+
+### Browser and loading (Windows)
+
+| Tool | Description |
+|------|-------------|
+| `fl_browser_search` | Find samples and presets by name in the folders FL's browser takes from disk ("kick 909", "sytrus pad"); returns paths the loading tools take |
+| `fl_browser_list` | List a folder of FL's browser (`"Packs/Drums/Kicks"`, `"Plugin database/Effects"`, ...) |
+| `fl_load_in_new_channel` | New channel from a sample, an instrument preset or a plugin, optionally named |
+| `fl_load_in_channel` | Replace a channel's sample or preset, keeping its name |
+| `fl_add_effect` | Add an effect plugin to a mixer track |
+| `fl_get_track_effects` | Effects on a mixer track, by slot, with on/off and mix |
+| `fl_set_effect` | Switch an effect on or off, or set how much of it is mixed in |
+| `fl_close_message` | Close a message box FL is showing (FL ignores changes while one is open) |
+| `fl_undo` | Step back in FL's undo history |
 
 ### Piano Roll
 
@@ -377,10 +461,33 @@ uv run fl-studio-mcp
 | `fl_clear_piano_roll` | Clear all notes |
 | `fl_get_piano_roll_state` | Read the piano roll's notes, fresh from FL |
 
-These five take optional `channel` and `pattern`. Notes can carry `velocity`, `release`, `pan`, `fcut`, `fres` (all 0.0-1.0), `slide`, `porta`, `muted`, `color` and `fine_pitch` (cents, ±1200; read back as `pitchofs` in tens of cents).
+These five take optional `channel` (an index or a role) and `pattern`. Notes can carry `velocity`, `release`, `pan`, `fcut`, `fres` (all 0.0-1.0), `slide`, `porta`, `muted`, `color` and `fine_pitch` (cents, ±1200; read back as `pitchofs` in tens of cents).
 | `fl_trigger_script` | Manually trigger the FL Studio script for queued requests |
 | `fl_get_piano_roll_info` | Get piano roll system info |
 | `fl_clear_request_queue` | Cancel pending queued changes |
+
+### Arrangement, Render and Analysis
+
+| Tool | Description |
+|------|-------------|
+| `fl_arrange` | Build the song in the playlist: sections back to back, each pattern on its own playlist track, repeated to fill its sections. FL ends in song mode (Windows) |
+| `fl_get_playlist` | Song length and the names of the first playlist tracks |
+| `fl_arrange_in_pattern` | The older way: the song written as notes into one long pattern (works without the playlist) |
+| `fl_screenshot` | A picture of FL's window or one panel (playlist, piano roll, channel rack, mixer, browser), taken in the background (Windows) |
+| `fl_render` | Render what FL would play (pattern or song mode) to a WAV through FL's export dialog, and measure it (Windows) |
+| `fl_render_stems` | Render each channel soloed and summarise it (loudness, peak, clipping, energy per band, pitch), to balance the mix; `master_effects=false` takes the master's limiter out of the measurement (Windows) |
+| `fl_measure_pitch` | Play one note on a channel alone and report the pitch that comes out, and how to transpose its notes so it is in tune with the song (Windows) |
+| `audio_analyze` | Measure any WAV: loudness (LUFS, ITU-R BS.1770), peak, RMS, crest factor, clipping, silence, energy per frequency band, stereo correlation and width, estimated key, the note played most (pitch), loudness over time |
+
+`audio_analyze` needs numpy (`uv sync` installs it with the dev tools; otherwise `uv sync --extra analysis`). The key estimate often can't tell a key from its relative (E minor / G major), so it reports a runner-up.
+
+### Styles
+
+| Tool | Description |
+|------|-------------|
+| `style_list` | Available style packs (and any that failed to load, with the reason) |
+| `style_get` | A full style pack |
+| `style_check_project` | Does the open project fit a style: tempo in range, required roles found |
 
 ### Music (no FL Studio needed)
 
@@ -405,6 +512,8 @@ These five take optional `channel` and `pattern`. Notes can carry `velocity`, `r
 "Write an F minor i-VI-III-VII progression, arpeggiate it in 16ths up and down over two octaves, and put it in the piano roll"
 "Add a snare roll over the last 2 bars that goes 8ths, 16ths, 32nds and gets louder"
 "Set the tempo to 150, find an empty pattern, call it 'Intro' and put a bassline on channel 3 there"
+"Check the project has a kick, a bass and a lead, then write a 4-bar bassline on the bass"
+"Using the hardstyle style pack, check my project and write a 16-bar climax: kick on every beat tuned to F, and a lead melody on the lead channel"
 "Write a 16-step hi-hat pattern on channel 2 with accents on the off-beats and the 4th step panned left"
 ```
 
@@ -426,7 +535,7 @@ These five take optional `channel` and `pattern`. Notes can carry `velocity`, `r
 ### Piano roll: "FL Studio did not respond"
 
 1. A piano roll must be open in FL Studio
-2. Run **Tools > Scripting > ComposeWithLLM** manually once per FL session, from the piano roll window's menu (not FL's main Tools menu)
+2. The script must have been run once per FL session from the piano roll window's menu (**Tools > Scripting > ComposeWithLLM**, not FL's main Tools menu). On Windows the server tries this itself; if a dialog or another open menu was in the way, close it and retry, or run it by hand
 3. Press `Ctrl+Alt+Y` (Windows) or `Cmd+Opt+Y` (macOS) yourself to check the hotkey runs the script; the requests stay queued until then
 4. Make sure the installed `ComposeWithLLM.pyscript` is up to date (same reason as above)
 5. On Windows, FL Studio must not be minimized to the system tray; on macOS, grant Accessibility permissions when prompted
@@ -488,6 +597,7 @@ uv sync --python 3.12   # installs runtime and dev dependencies
 | `uv run ruff check --fix .` | Lint and auto-fix |
 | `uv run pytest` | Run tests (FL Studio not required; the FL API is faked) |
 | `uv run pytest --cov --cov-report=term-missing` | Run tests with coverage |
+| `uv run python -c "from fl_studio_mcp.utils.connection import call; print(call('dev.reloadScript'))"` | Make the running FL controller re-run its installed file after you copy a new version in |
 
 The FL-side scripts run inside FL Studio's embedded Python and can't import the server package. The tests load them against fake FL modules (`tests/fakes.py`). Changes to them still need a manual check in FL Studio.
 

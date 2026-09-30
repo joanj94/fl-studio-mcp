@@ -174,13 +174,13 @@ def test_clear_request_queue(tools, settings_dir):
     assert not (_scripts_dir(settings_dir) / "mcp_request.json").exists()
 
 
-def test_get_state_adds_note_names(tools, settings_dir):
-    assert "error" in tools["fl_get_piano_roll_state"]()
+def test_cached_state_adds_note_names(tools, settings_dir):
+    assert "error" in tools["fl_get_piano_roll_state"](refresh=False)
 
     state_file = _scripts_dir(settings_dir) / "piano_roll_state.json"
     state_file.write_text(json.dumps({"ppq": 96, "notes": [{"midi": 69}]}))
 
-    assert tools["fl_get_piano_roll_state"]()["notes"][0]["note_name"] == "A4"
+    assert tools["fl_get_piano_roll_state"](refresh=False)["notes"][0]["note_name"] == "A4"
 
 
 def test_trigger_script_waits_for_pending_requests(tools, settings_dir, monkeypatch):
@@ -248,17 +248,20 @@ NOTE = {"midi": 60, "duration": 1}
 def test_send_notes_selects_channel_then_pattern_before_queueing(tools, settings_dir, fl_conn):
     tools["fl_send_notes"]([NOTE], channel=4, pattern=2, auto_trigger=False)
 
-    assert fl_conn.sent == [("channels.selectOne", {"index": 4}), ("patterns.select", {"index": 2})]
+    assert fl_conn.sent == [
+        ("channels.showInPianoRoll", {"index": 4}),
+        ("patterns.select", {"index": 2}),
+    ]
     assert _queued(settings_dir)[0]["action"] == "add_notes"
 
 
 def test_bad_channel_leaves_the_pattern_alone(tools, settings_dir, fl_conn):
-    fl_conn.results["channels.selectOne"] = {"error": "no channel 99"}
+    fl_conn.results["channels.showInPianoRoll"] = {"error": "no channel 99"}
 
     result = tools["fl_send_notes"]([NOTE], channel=99, pattern=5, auto_trigger=False)
 
     assert "no channel 99" in result
-    assert fl_conn.sent == [("channels.selectOne", {"index": 99})]
+    assert fl_conn.sent == [("channels.showInPianoRoll", {"index": 99})]
 
 
 def test_without_target_nothing_is_selected(tools, settings_dir, fl_conn):
@@ -268,7 +271,7 @@ def test_without_target_nothing_is_selected(tools, settings_dir, fl_conn):
 
 
 def test_failed_target_selection_queues_nothing(tools, settings_dir, fl_conn):
-    fl_conn.results["channels.selectOne"] = {"error": "no channel 9"}
+    fl_conn.results["channels.showInPianoRoll"] = {"error": "no channel 9"}
 
     result = tools["fl_send_notes"]([NOTE], channel=9, auto_trigger=False)
 
@@ -284,7 +287,7 @@ def test_failed_target_selection_queues_nothing(tools, settings_dir, fl_conn):
 def test_other_note_tools_accept_a_target(tools, settings_dir, fl_conn, tool, args):
     tools[tool](**args, channel=1, auto_trigger=False)
 
-    assert fl_conn.sent == [("channels.selectOne", {"index": 1})]
+    assert fl_conn.sent == [("channels.showInPianoRoll", {"index": 1})]
 
 
 def test_send_notes_passes_note_properties_and_converts_fine_pitch(tools, settings_dir):
@@ -322,7 +325,7 @@ def test_get_state_of_a_target_reads_fresh_state(tools, settings_dir, fl_conn, m
 
     state = tools["fl_get_piano_roll_state"](channel=4)
 
-    assert fl_conn.sent == [("channels.selectOne", {"index": 4})]
+    assert fl_conn.sent == [("channels.showInPianoRoll", {"index": 4})]
     assert state["notes"][0]["note_name"] == "A4"
 
 
@@ -330,7 +333,31 @@ def test_get_state_reports_when_fl_does_not_answer(tools, settings_dir, fl_conn,
     monkeypatch.setattr(piano_roll, "get_trigger", lambda: FakeTrigger())
     monkeypatch.setattr(piano_roll, "RESPONSE_TIMEOUT", 0.05)
 
-    assert "did not respond" in tools["fl_get_piano_roll_state"](refresh=True)["error"]
+    assert "did not respond" in tools["fl_get_piano_roll_state"]()["error"]
+
+
+def test_get_state_reads_fresh_by_default(tools, settings_dir, fl_conn, monkeypatch):
+    # A cached read would return the notes from the last run that changed something.
+    scripts = _scripts_dir(settings_dir)
+    scripts.mkdir(parents=True, exist_ok=True)
+    (scripts / "piano_roll_state.json").write_text(json.dumps({"ppq": 96, "notes": []}))
+
+    def fl_runs_script() -> None:
+        ids = [r["id"] for r in _queued(settings_dir)]
+        assert [r["action"] for r in _queued(settings_dir)] == ["read"]
+        (scripts / "piano_roll_state.json").write_text(
+            json.dumps({"ppq": 96, "noteCount": 1, "notes": [{"midi": 72}]})
+        )
+        (scripts / "mcp_response.json").write_text(
+            json.dumps({"status": "success", "request_ids": ids})
+        )
+
+    monkeypatch.setattr(piano_roll, "get_trigger", lambda: FakeTrigger(fl_runs_script))
+
+    state = tools["fl_get_piano_roll_state"]()
+
+    assert [n["midi"] for n in state["notes"]] == [72]
+    assert fl_conn.sent == []  # no target given, so nothing is selected
 
 
 def test_piano_roll_info(tools, settings_dir):
@@ -338,3 +365,27 @@ def test_piano_roll_info(tools, settings_dir):
 
     assert info["request_file"] == str(_scripts_dir(settings_dir) / "mcp_request.json")
     assert info["request_file_exists"] is False
+
+
+def test_note_tools_accept_a_role(tools, settings_dir, fl_conn):
+    fl_conn.results["channels.getAll"] = {"channels": [
+        {"index": 0, "name": "808 Kick"}, {"index": 4, "name": "808 Astronomic"},
+    ]}
+
+    tools["fl_send_notes"]([NOTE], channel="astronomic", pattern=2, auto_trigger=False)
+
+    assert fl_conn.sent == [
+        ("channels.getAll", {}),
+        ("channels.showInPianoRoll", {"index": 4}),
+        ("patterns.select", {"index": 2}),
+    ]
+
+
+def test_unknown_role_queues_nothing_and_leaves_selection_alone(tools, settings_dir, fl_conn):
+    fl_conn.results["channels.getAll"] = {"channels": [{"index": 0, "name": "808 Kick"}]}
+
+    result = tools["fl_send_notes"]([NOTE], channel="lead", pattern=2, auto_trigger=False)
+
+    assert "No channel" in result
+    assert fl_conn.sent == [("channels.getAll", {})]
+    assert not (_scripts_dir(settings_dir) / "mcp_request.json").exists()

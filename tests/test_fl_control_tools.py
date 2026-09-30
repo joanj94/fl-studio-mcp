@@ -116,3 +116,10 @@ def test_get_step_params_converts_back(tools, fl):
         {"step": 0, "on": False},
         {"step": 1, "on": True, "velocity": 1.0, "pan": 0.0},
     ]}
+    assert fl.sent == [("channels.getStepParams", {"channel": 0, "steps": 2})]
+
+
+def test_get_step_params_can_name_the_pattern(tools, fl):
+    tools["fl_get_step_params"](channel=0, steps=2, pattern=3)
+
+    assert fl.sent == [("channels.getStepParams", {"channel": 0, "steps": 2, "pattern": 3})]

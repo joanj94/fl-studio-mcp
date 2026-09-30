@@ -115,6 +115,7 @@ def register_transport_tools(mcp: FastMCP) -> None:
             return {"error": result["error"]}
 
         return {
+            "bars": result.get("bars", 0),
             "ticks": result.get("ticks", 0),
             "seconds": result.get("seconds", 0),
             "milliseconds": result.get("milliseconds", 0),

@@ -31,6 +31,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Audio measurements for fl_render / audio_analyze.
+analysis = [
+    "numpy>=1.26",
+]
 dev = [
     "fl-studio-api-stubs>=37.0",
     "pytest>=8.0",
@@ -52,6 +56,7 @@ constraint-dependencies = ["cryptography<49"]
 [dependency-groups]
 dev = [
     "fl-studio-api-stubs>=37.0",
+    "numpy>=1.26",
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "ruff>=0.8",

@@ -21,6 +21,7 @@ Communication flow:
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 # FL Studio API modules (available when running inside FL Studio)
@@ -29,8 +30,10 @@ import general
 import midi
 import mixer
 import patterns
+import playlist
 import plugins
 import transport
+import ui
 
 
 def _get_documents_dir() -> Path:
@@ -161,10 +164,33 @@ def write_response(response: dict, request_id=None):
         print(f"Error writing response: {e}")
 
 
+def handle_dev_reload_script() -> dict:
+    """Re-run this script's installed file so edits apply without FL's Reload button.
+
+    The source is compiled first, so a syntax error changes nothing. Functions
+    and constants are then replaced in place, and the next command uses the new
+    code. If the file raises while running, the names defined before the error
+    are already replaced: fix the file and reload again, or use FL's Reload.
+    """
+    path = SCRIPT_DIR / "device_FLStudioMCP.py"
+    try:
+        code = compile(path.read_text(encoding="utf-8"), str(path), "exec")
+    except SyntaxError as e:
+        return {"error": "SyntaxError in %s: %s" % (path, e)}
+    try:
+        exec(code, globals())
+    except Exception as e:
+        return {"error": "Reload of %s partly applied, then failed: %r. "
+                         "Fix the file and reload again." % (path, e)}
+    return {"reloaded": str(path)}
+
+
 def dispatch_command(action: str, params: dict) -> dict:
     """Route command to appropriate handler and return result."""
 
     # Transport commands
+    if action == "dev.reloadScript":
+        return handle_dev_reload_script()
     if action == "transport.start":
         return handle_transport_start()
     elif action == "transport.stop":
@@ -191,6 +217,8 @@ def dispatch_command(action: str, params: dict) -> dict:
         return handle_mixer_get_all_tracks(params)
     elif action == "mixer.setTrackVolume":
         return handle_mixer_set_track_volume(params)
+    elif action == "mixer.setTrackVolumeDb":
+        return handle_mixer_set_track_volume_db(params)
     elif action == "mixer.setTrackPan":
         return handle_mixer_set_track_pan(params)
     elif action == "mixer.muteTrack":
@@ -217,6 +245,10 @@ def dispatch_command(action: str, params: dict) -> dict:
         return handle_channels_get_selected()
     elif action == "channels.select":
         return handle_channels_select(params)
+    elif action == "channels.showInPianoRoll":
+        return handle_channels_show_in_piano_roll(params)
+    elif action == "channels.showEditor":
+        return handle_channels_show_editor(params)
     elif action == "channels.selectOne":
         return handle_channels_select_one(params)
     elif action == "channels.triggerNote":
@@ -287,8 +319,44 @@ def dispatch_command(action: str, params: dict) -> dict:
         return handle_plugins_next_preset(params)
     elif action == "plugins.prevPreset":
         return handle_plugins_prev_preset(params)
+    elif action == "mixer.setEffect":
+        return handle_mixer_set_effect(params)
+    elif action == "mixer.getTrackEffects":
+        return handle_mixer_get_track_effects(params)
+    elif action == "project.undo":
+        return handle_project_undo(params)
+    elif action == "plugins.listPresets":
+        return handle_plugins_list_presets(params)
+    elif action == "browser.getFocused":
+        return handle_browser_get_focused()
+    elif action == "browser.navigate":
+        return handle_browser_navigate(params)
+    elif action == "browser.selectTab":
+        return handle_browser_select_tab(params)
+    elif action == "browser.toggleNode":
+        return handle_browser_toggle_node(params)
+    elif action == "ui.focusWindow":
+        return handle_ui_focus_window(params)
+    elif action == "browser.openFocused":
+        return handle_browser_open_focused()
     elif action == "plugins.getColor":
         return handle_plugins_get_color(params)
+
+    # Playlist commands
+    elif action == "playlist.getState":
+        return handle_playlist_get_state()
+    elif action == "playlist.scrollTo":
+        return handle_playlist_scroll_to(params)
+    elif action == "playlist.getSelectedTrack":
+        return handle_playlist_get_selected_track(params)
+    elif action == "playlist.deselectTracks":
+        return handle_playlist_deselect_tracks()
+    elif action == "playlist.getSongPosition":
+        return handle_playlist_get_song_position()
+    elif action == "playlist.getTracks":
+        return handle_playlist_get_tracks(params)
+    elif action == "playlist.setTrackName":
+        return handle_playlist_set_track_name(params)
 
     else:
         return {"error": f"Unknown action: {action}"}
@@ -339,9 +407,10 @@ def handle_transport_set_position(params: dict) -> dict:
 def handle_transport_get_length() -> dict:
     """Get song length."""
     return {
-        "ticks": transport.getSongLength(3),
-        "seconds": transport.getSongLength(2),
-        "milliseconds": transport.getSongLength(1),
+        "bars": transport.getSongLength(midi.SONGLENGTH_BARS),
+        "ticks": transport.getSongLength(midi.SONGLENGTH_ABSTICKS),
+        "seconds": transport.getSongLength(midi.SONGLENGTH_S),
+        "milliseconds": transport.getSongLength(midi.SONGLENGTH_MS),
     }
 
 
@@ -392,26 +461,34 @@ def handle_mixer_get_track_info(params: dict) -> dict:
 
 
 def handle_mixer_get_all_tracks(params: dict) -> dict:
-    """Get info about all mixer tracks."""
+    """The mixer tracks in use: named, with a channel routed to them, or holding an effect.
+
+    `include_empty` lists every track. Each comes with the channels routed to it.
+    """
     include_empty = params.get("include_empty", False)
+    routed = {}
+    for channel in range(channels.channelCount(True)):
+        track = channels.getTargetFxTrack(channel, True)
+        routed.setdefault(track, []).append(channels.getChannelName(channel, True))
+
     tracks = []
-    track_count = mixer.trackCount()
-
-    for i in range(track_count):
+    for i in range(mixer.trackCount()):
         name = mixer.getTrackName(i)
-
-        # Skip empty tracks if requested
-        if not include_empty and (not name or name.startswith("Insert ")):
-            if i != 0:  # Always include master
-                continue
-
+        named = bool(name) and not name.startswith("Insert ")
+        in_use = named or i in routed or any(
+            plugins.isValid(i, slot, True) for slot in range(MIXER_SLOTS)
+        )
+        if not (include_empty or in_use or i == 0):
+            continue
         tracks.append({
             "index": i,
             "name": name if name else ("Master" if i == 0 else f"Insert {i}"),
             "volume": mixer.getTrackVolume(i),
+            "volume_db": mixer.getTrackVolume(i, 1),
             "pan": mixer.getTrackPan(i),
             "is_muted": mixer.isTrackMuted(i) == 1,
             "is_solo": mixer.isTrackSolo(i) == 1,
+            "channels": routed.get(i, []),
         })
 
     return {"tracks": tracks}
@@ -423,6 +500,47 @@ def handle_mixer_set_track_volume(params: dict) -> dict:
     volume = params.get("volume", 0.8)
     mixer.setTrackVolume(track, volume)
     return {
+        "volume": mixer.getTrackVolume(track),
+        "volume_db": mixer.getTrackVolume(track, 1),
+    }
+
+
+MAX_TRACK_DB = 5.6  # a mixer fader all the way up
+MIN_TRACK_DB = -80.0
+FADER_SEARCH_STEPS = 24
+
+
+def handle_mixer_set_track_volume_db(params: dict) -> dict:
+    """Set a mixer track's fader to a level in dB.
+
+    FL takes the fader's position (0-1, 0.8 is 0 dB) and tells the dB it gives,
+    but not the other way round, so the position is found by halving.
+    """
+    track = params.get("track")
+    db = params.get("db")
+    error = _check_mixer_track(track)
+    if error:
+        return {"error": error}
+    if isinstance(db, bool) or not isinstance(db, (int, float)) or not (
+            MIN_TRACK_DB <= db <= MAX_TRACK_DB):
+        return {"error": "db must be a number from %g to %g" % (MIN_TRACK_DB, MAX_TRACK_DB)}
+
+    before = mixer.getTrackVolume(track)
+    low, high = 0.0, 1.0
+    try:
+        for _ in range(FADER_SEARCH_STEPS):
+            middle = (low + high) / 2
+            mixer.setTrackVolume(track, middle)
+            if mixer.getTrackVolume(track, 1) < db:
+                low = middle
+            else:
+                high = middle
+    except Exception:
+        mixer.setTrackVolume(track, before)  # not left wherever the search was
+        raise
+    mixer.setTrackVolume(track, high)
+    return {
+        "track": track,
         "volume": mixer.getTrackVolume(track),
         "volume_db": mixer.getTrackVolume(track, 1),
     }
@@ -537,6 +655,16 @@ def handle_channels_get_info(params: dict) -> dict:
     }
 
 
+def _plugin_name(channel: int):
+    """The channel's plugin name, or None (no plugin, or FL couldn't say)."""
+    try:
+        if plugins.isValid(channel, -1, True):
+            return plugins.getPluginName(channel, -1, False, True)
+    except Exception:
+        pass  # One odd channel shouldn't break the whole channel list.
+    return None
+
+
 def handle_channels_get_all() -> dict:
     """Get info about all channels."""
     channels_list = []
@@ -549,6 +677,7 @@ def handle_channels_get_all() -> dict:
             "is_muted": channels.isChannelMuted(i, True) == 1,
             "is_selected": channels.isChannelSelected(i, True) == 1,
             "target_fx_track": channels.getTargetFxTrack(i, True),
+            "plugin": _plugin_name(i),
         })
 
     return {"channels": channels_list}
@@ -582,6 +711,33 @@ def handle_channels_select(params: dict) -> dict:
         "selected": select,
         "channel_name": channels.getChannelName(index, True),
     }
+
+
+def handle_channels_show_in_piano_roll(params: dict) -> dict:
+    """Make the piano roll show a channel, so piano roll scripts edit that channel.
+
+    Selecting a channel doesn't retarget an open piano roll; hiding and showing
+    the window after selecting does (verified live, FL 2026).
+    """
+    index = params.get("index")
+    count = channels.channelCount(True)
+    if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < count:
+        return {"error": "Channel index must be 0-%d, got %r" % (count - 1, index)}
+    channels.selectOneChannel(index, True)
+    ui.hideWindow(midi.widPianoRoll)
+    ui.showWindow(midi.widPianoRoll)
+    return {"channel_name": channels.getChannelName(index, True)}
+
+
+def handle_channels_show_editor(params: dict) -> dict:
+    """Show or hide a channel's plugin (or channel settings) window."""
+    index = params.get("index")
+    count = channels.channelCount(True)
+    if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < count:
+        return {"error": "Channel index must be 0-%d, got %r" % (count - 1, index)}
+    show = bool(params.get("show", True))
+    channels.showEditor(index, 1 if show else 0, True)
+    return {"shown": show, "channel_name": channels.getChannelName(index, True)}
 
 
 def handle_channels_select_one(params: dict) -> dict:
@@ -679,10 +835,21 @@ def handle_channels_route_to_mixer(params: dict) -> dict:
     """Route channel to mixer track."""
     channel_index = params.get("channel_index", 0)
     mixer_track = params.get("mixer_track", 0)
+    # FL silently routes to its last insert track when asked for one that isn't
+    # there. trackCount() counts the master, the inserts and the "current" track.
+    last_insert = mixer.trackCount() - 2
+    count = channels.channelCount(True)
+    if (not isinstance(channel_index, int) or isinstance(channel_index, bool)
+            or not 0 <= channel_index < count):
+        return {"error": "channel_index must be 0-%d, got %r" % (count - 1, channel_index)}
+    if (not isinstance(mixer_track, int) or isinstance(mixer_track, bool)
+            or not 0 <= mixer_track <= last_insert):
+        return {"error": "mixer_track must be 0 (master) to %d, the last insert track of "
+                         "this project's mixer; got %r" % (last_insert, mixer_track)}
     channels.setTargetFxTrack(channel_index, mixer_track, True)
     return {
         "channel_name": channels.getChannelName(channel_index, True),
-        "mixer_track": mixer_track,
+        "mixer_track": channels.getTargetFxTrack(channel_index, True),
     }
 
 
@@ -698,12 +865,22 @@ def handle_channels_get_grid_bit(params: dict) -> dict:
     return {"value": channels.getGridBit(channel, position, True) == 1}
 
 
+def _set_grid_bit(channel: int, position: int, on) -> None:
+    """Switch a step on or off, leaving it alone if it already is.
+
+    Seen live in FL 2026: setGridBit(1) on a step that is already on adds a
+    second note to that step each time, so the state is checked first.
+    """
+    if (channels.getGridBit(channel, position, True) == 1) != bool(on):
+        channels.setGridBit(channel, position, 1 if on else 0, True)
+
+
 def handle_channels_set_grid_bit(params: dict) -> dict:
     """Set a step on or off."""
     channel = params.get("channel", 0)
     position = params.get("position", 0)
     value = params.get("value", False)
-    channels.setGridBit(channel, position, 1 if value else 0, True)
+    _set_grid_bit(channel, position, value)
     return {
         "value": value,
         "channel_name": channels.getChannelName(channel, True),
@@ -728,7 +905,7 @@ def handle_channels_set_step_sequence(params: dict) -> dict:
     pattern = params.get("pattern", [])
 
     for i, value in enumerate(pattern):
-        channels.setGridBit(channel, i, 1 if value else 0, True)
+        _set_grid_bit(channel, i, value)
 
     active_steps = sum(pattern)
     return {
@@ -777,29 +954,37 @@ def handle_channels_set_step_params(params: dict) -> dict:
     pattern = patterns.patternNumber()
     ticks_per_step = _ticks_per_step()
 
-    written = 0
+    params_written = 0
     for step in steps:
         position = step["step"]
         if "on" in step:
-            channels.setGridBit(channel, position, 1 if step["on"] else 0, True)
+            _set_grid_bit(channel, position, step["on"])
         for name, param_id in STEP_PARAMS.items():
             if name in step:
                 value = step[name]
                 if name == "shift":
                     value += position * ticks_per_step
                 channels.setStepParameterByIndex(channel, pattern, position, param_id, value, True)
-                written += 1
+                params_written += 1
 
     return {
         "channel_name": channels.getChannelName(channel, True),
         "pattern": pattern,
-        "steps_written": written,
+        "steps_written": len(steps),
+        "params_written": params_written,
     }
 
 
 def handle_channels_get_step_params(params: dict) -> dict:
-    """Grid bits of the current pattern, with every step parameter of active steps."""
+    """Grid bits and, for active steps, every step parameter.
+
+    FL only reads the current pattern, so a given pattern is selected first.
+    """
     channel = params.get("channel", 0)
+    if params.get("pattern") is not None:
+        selected = handle_patterns_select({"index": params["pattern"]})
+        if "error" in selected:
+            return selected
     ticks_per_step = _ticks_per_step()
     steps = []
 
@@ -873,11 +1058,16 @@ def handle_project_get_info() -> dict:
 # =============================================================================
 
 
+# Step sequencer steps (16th notes) in a beat.
+STEPS_PER_BEAT = 4
+
+
 def _pattern_info(index: int, current: int) -> dict:
     return {
         "index": index,
         "name": patterns.getPatternName(index),
-        "length_beats": patterns.getPatternLength(index),
+        # Seen live in FL 2026, unlike the API docs: getPatternLength counts steps.
+        "length_beats": patterns.getPatternLength(index) / STEPS_PER_BEAT,
         "is_current": index == current,
     }
 
@@ -966,9 +1156,9 @@ def handle_plugins_get_name(params: dict) -> dict:
     use_global = params.get("use_global", True)
 
     if slot_index >= 0:
-        name = plugins.getPluginName(index, slot_index, True)
+        name = plugins.getPluginName(index, slot_index, False)
     else:
-        name = plugins.getPluginName(index, -1, use_global)
+        name = plugins.getPluginName(index, -1, False, use_global)
 
     return {"name": name}
 
@@ -988,40 +1178,39 @@ def handle_plugins_get_param_count(params: dict) -> dict:
 
 
 def handle_plugins_get_params(params: dict) -> dict:
-    """Get all plugin parameters."""
+    """A plugin's parameters: the first `max_params`, or those whose name matches `search`.
+
+    `search` is matched word by word, ignoring case ("pitch env" finds "Pitch
+    envelope - Attack time"); unnamed parameters never match.
+    """
     index = params.get("index", 0)
     slot_index = params.get("slot_index", -1)
     use_global = params.get("use_global", True)
     max_params = params.get("max_params", 50)
-
+    words = str(params.get("search") or "").lower().split()
     if slot_index >= 0:
-        param_count = plugins.getParamCount(index, slot_index, True)
-    else:
-        param_count = plugins.getParamCount(index, -1, use_global)
+        use_global = True
 
+    param_count = plugins.getParamCount(index, slot_index, use_global)
     param_list = []
-    for i in range(min(param_count, max_params)):
+    for i in range(param_count if words else min(param_count, max_params)):
         try:
-            if slot_index >= 0:
-                name = plugins.getParamName(i, index, slot_index, True)
-                value = plugins.getParamValue(i, index, slot_index, True)
-                value_str = plugins.getParamValueString(i, index, slot_index, True)
-            else:
-                name = plugins.getParamName(i, index, -1, use_global)
-                value = plugins.getParamValue(i, index, -1, use_global)
-                value_str = plugins.getParamValueString(i, index, -1, use_global)
-
+            name = plugins.getParamName(i, index, slot_index, use_global)
+            if words and not (name and all(word in name.lower() for word in words)):
+                continue
             param_list.append({
                 "index": i,
                 "name": name,
-                "value": value,
-                "value_string": value_str,
+                "value": plugins.getParamValue(i, index, slot_index, use_global),
+                "value_string": plugins.getParamValueString(i, index, slot_index, use_global),
             })
         except Exception as e:
             print(f"Warning: could not read param {i}: {e}")
             continue
+        if len(param_list) >= max_params:
+            break
 
-    return {"params": param_list}
+    return {"params": param_list, "total": param_count}
 
 
 def handle_plugins_get_param_value(params: dict) -> dict:
@@ -1099,10 +1288,10 @@ def handle_plugins_next_preset(params: dict) -> dict:
     use_global = params.get("use_global", True)
 
     if slot_index >= 0:
-        plugin_name = plugins.getPluginName(index, slot_index, True)
+        plugin_name = plugins.getPluginName(index, slot_index, False)
         plugins.nextPreset(index, slot_index, True)
     else:
-        plugin_name = plugins.getPluginName(index, -1, use_global)
+        plugin_name = plugins.getPluginName(index, -1, False, use_global)
         plugins.nextPreset(index, -1, use_global)
 
     return {"plugin_name": plugin_name}
@@ -1115,10 +1304,10 @@ def handle_plugins_prev_preset(params: dict) -> dict:
     use_global = params.get("use_global", True)
 
     if slot_index >= 0:
-        plugin_name = plugins.getPluginName(index, slot_index, True)
+        plugin_name = plugins.getPluginName(index, slot_index, False)
         plugins.prevPreset(index, slot_index, True)
     else:
-        plugin_name = plugins.getPluginName(index, -1, use_global)
+        plugin_name = plugins.getPluginName(index, -1, False, use_global)
         plugins.prevPreset(index, -1, use_global)
 
     return {"plugin_name": plugin_name}
@@ -1136,3 +1325,313 @@ def handle_plugins_get_color(params: dict) -> dict:
         color = plugins.getColor(index, -1, use_global)
 
     return {"color": hex(color)}
+
+
+def handle_plugins_list_presets(params: dict) -> dict:
+    """Names of a plugin's internal presets, in order."""
+    index = params.get("index", 0)
+    slot_index = params.get("slot_index", -1)
+    use_global = True if slot_index >= 0 else params.get("use_global", True)
+
+    count = plugins.getPresetCount(index, slot_index, use_global)
+    names = [
+        plugins.getName(index, slot_index, midi.FPN_Preset, preset, use_global)
+        for preset in range(count)
+    ]
+    return {"count": count, "presets": names}
+
+
+# =============================================================================
+# Browser Handlers
+# =============================================================================
+
+BROWSER_DIRECTIONS = {"previous": midi.FPT_Up, "next": midi.FPT_Down}
+MAX_BROWSER_STEPS = 500
+BROWSER_FOLDER_TYPE = -100  # folders and collections are this or lower
+# Two items may share a name, so the cursor only counts as stuck after a few repeats.
+BROWSER_STUCK_REPEATS = 3
+# Seconds one command may walk before answering, to stay inside the server's timeout.
+BROWSER_TIME_BUDGET = 1.0
+
+
+def _focused_browser_node() -> dict:
+    return {"name": ui.getFocusedNodeCaption(), "file_type": ui.getFocusedNodeFileType()}
+
+
+def handle_browser_get_focused() -> dict:
+    """The item the browser's cursor is on."""
+    return _focused_browser_node()
+
+
+def handle_browser_navigate(params: dict) -> dict:
+    """Move the browser's cursor up or down; returns every item it reached.
+
+    `until` (a name, with `until_type` its file type) stops at the first such item.
+    `collapse` closes every folder it reaches, so the walk stays on one level.
+    `stuck` is True when the cursor stopped moving: the top or bottom of the list.
+    It may stop before `steps` when it has taken long; `items` tells how far it got.
+
+    FL doesn't say whether the cursor moved. The same item again means the end
+    of the list, unless a different item follows: then they were neighbours alike
+    in name and type (a folder holding a folder of its own name). Repeats still
+    undecided at the last step are returned as `pending`: they count if the
+    next command finds the cursor moving on.
+    """
+    direction = BROWSER_DIRECTIONS.get(params.get("direction", "next"))
+    steps = params.get("steps", 1)
+    until = params.get("until")
+    until_type = params.get("until_type")
+    collapse = params.get("collapse", False)
+    if direction is None:
+        return {"error": "direction must be 'next' or 'previous'"}
+    if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= MAX_BROWSER_STEPS:
+        return {"error": "steps must be 1-%d" % MAX_BROWSER_STEPS}
+
+    reached = []
+    repeats = 0
+    previous = _focused_browser_node()
+    started = time.time()
+    for _ in range(steps):
+        ui.navigateBrowser(direction, False)
+        node = _focused_browser_node()
+        if collapse and node["file_type"] <= BROWSER_FOLDER_TYPE:
+            ui.toggleBrowserNode(0)
+        if node == previous:
+            repeats += 1
+            if repeats >= BROWSER_STUCK_REPEATS:
+                return {"items": reached, "found": False, "stuck": True, "pending": []}
+            continue
+        reached.extend([previous] * repeats)
+        repeats = 0
+        previous = node
+        reached.append(node)
+        if node["name"] == until and until_type in (None, node["file_type"]):
+            return {"items": reached, "found": True, "stuck": False, "pending": []}
+        if time.time() - started > BROWSER_TIME_BUDGET:
+            break
+    return {"items": reached, "found": False, "stuck": False, "pending": [previous] * repeats}
+
+
+def handle_browser_select_tab(params: dict) -> dict:
+    """Step through the browser's tabs; returns the tab now showing."""
+    directions = {"left": midi.FPT_Left, "right": midi.FPT_Right, "first": 0}
+    direction = directions.get(params.get("direction", "first"))
+    if direction is None:
+        return {"error": "direction must be 'left', 'right' or 'first'"}
+    return {"tab": ui.navigateBrowserTabs(direction)}
+
+
+def handle_browser_toggle_node(params: dict) -> dict:
+    """Expand (1), collapse (0) or toggle (-1) the focused folder."""
+    ui.toggleBrowserNode(params.get("value", -1))
+    return _focused_browser_node()
+
+
+def handle_browser_open_focused() -> dict:
+    """Open the focused item, as clicking it would."""
+    node = _focused_browser_node()
+    ui.selectBrowserMenuItem()
+    return node
+
+
+# =============================================================================
+# UI Handlers
+# =============================================================================
+
+UI_WINDOWS = {
+    "mixer": midi.widMixer, "channel rack": midi.widChannelRack,
+    "playlist": midi.widPlaylist, "piano roll": midi.widPianoRoll,
+    "browser": midi.widBrowser,
+}
+
+
+def _ui_state() -> dict:
+    return {
+        "focused_window": ui.getFocusedFormCaption(),
+        "focused_window_id": ui.getFocusedFormID(),
+        "in_popup_menu": bool(ui.isInPopupMenu()),
+    }
+
+
+def handle_ui_focus_window(params: dict) -> dict:
+    """Show one of FL's main windows and give it the focus."""
+    window = UI_WINDOWS.get(params.get("window"))
+    if window is None:
+        return {"error": "window must be one of: %s" % ", ".join(sorted(UI_WINDOWS))}
+    ui.showWindow(window)
+    ui.setFocused(window)
+    return _ui_state()
+
+
+# =============================================================================
+# Mixer effect slots and undo
+# =============================================================================
+
+MIXER_SLOTS = 10
+# A slot's mix knob at 100%. Seen live: it is set on one scale and read back on another.
+EFFECT_MIX_FULL = 12800
+EFFECT_MIX_READ_FULL = 1 << 30
+MAX_UNDO_STEPS = 50
+
+
+def _check_mixer_track(track) -> str:
+    if not isinstance(track, int) or isinstance(track, bool):
+        return "track must be an integer"
+    if not 0 <= track < mixer.trackCount():
+        return "track must be 0-%d" % (mixer.trackCount() - 1)
+    return ""
+
+
+def _effect_event(track: int, slot: int, event: int) -> int:
+    """ID of one of an effect slot's own controls (mute switch, mix level)."""
+    return mixer.getTrackPluginId(track, slot) + event
+
+
+def _track_effects(track: int) -> list:
+    return [
+        {
+            "slot": slot,
+            "plugin": plugins.getPluginName(track, slot, False, True),
+            "enabled": mixer.getEventValue(_effect_event(track, slot, midi.REC_Plug_Mute)) != 0,
+            "mix": round(
+                mixer.getEventValue(_effect_event(track, slot, midi.REC_Plug_MixLevel))
+                / EFFECT_MIX_READ_FULL, 3),
+        }
+        for slot in range(MIXER_SLOTS)
+        if plugins.isValid(track, slot, True)
+    ]
+
+
+def handle_mixer_set_effect(params: dict) -> dict:
+    """Switch an effect slot on or off and/or set how much of it is mixed in (0-1)."""
+    track = params.get("track")
+    slot = params.get("slot")
+    enabled = params.get("enabled")
+    mix = params.get("mix")
+    error = _check_mixer_track(track)
+    if error:
+        return {"error": error}
+    if not isinstance(slot, int) or isinstance(slot, bool) or not 0 <= slot < MIXER_SLOTS:
+        return {"error": "slot must be 0-%d" % (MIXER_SLOTS - 1)}
+    if not plugins.isValid(track, slot, True):
+        return {"error": "Mixer track %d has no effect in slot %d" % (track, slot)}
+    if mix is not None and (isinstance(mix, bool) or not isinstance(mix, (int, float))
+                            or not 0 <= mix <= 1):
+        return {"error": "mix must be a number from 0 to 1"}
+    if enabled is not None and not isinstance(enabled, bool):
+        return {"error": "enabled must be true or false"}
+    if enabled is None and mix is None:
+        return {"error": "Give enabled, mix or both"}
+
+    flags = midi.REC_Control | midi.REC_UpdateControl
+    if enabled is not None:
+        event = _effect_event(track, slot, midi.REC_Plug_Mute)
+        general.processRECEvent(event, 1 if enabled else 0, flags)
+    if mix is not None:
+        event = _effect_event(track, slot, midi.REC_Plug_MixLevel)
+        general.processRECEvent(event, int(round(mix * EFFECT_MIX_FULL)), flags)
+    return {"track": track, "effects": _track_effects(track)}
+
+
+def handle_mixer_get_track_effects(params: dict) -> dict:
+    """The effect plugins in a mixer track's slots."""
+    track = params.get("track")
+    error = _check_mixer_track(track)
+    if error:
+        return {"error": error}
+    return {"track": track, "name": mixer.getTrackName(track), "effects": _track_effects(track)}
+
+
+def handle_project_undo(params: dict) -> dict:
+    """Step back in FL's undo history."""
+    steps = params.get("steps", 1)
+    if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= MAX_UNDO_STEPS:
+        return {"error": "steps must be 1-%d" % MAX_UNDO_STEPS}
+    for _ in range(steps):
+        general.undoUp()
+    return {
+        "undone": steps,
+        "history_position": general.getUndoHistoryPos(),
+        "history_count": general.getUndoHistoryCount(),
+    }
+
+
+# =============================================================================
+# Playlist
+# =============================================================================
+
+# The API can't place or read clips. It can scroll the playlist, name its
+# tracks, tell which track is selected and how long the song is; the server
+# places clips by posting clicks to the playlist's window and checks with these.
+
+
+def _whole(value, low: int, high: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
+
+
+def handle_playlist_get_state() -> dict:
+    """Whether the playlist shows, and the song's length (0 ticks: no clips)."""
+    ticks = transport.getSongLength(midi.SONGLENGTH_ABSTICKS)
+    bar_ticks = general.getRecPPB()
+    return {
+        "visible": bool(ui.getVisible(midi.widPlaylist)),
+        # Seen live: one tick less than where the last clip ends.
+        "length_ticks": ticks + 1 if ticks > 0 else 0,
+        "length_bars": (ticks + 1) / bar_ticks if ticks > 0 else 0,
+        "bar_ticks": bar_ticks,
+        "track_count": playlist.trackCount(),
+    }
+
+
+def handle_playlist_scroll_to(params: dict) -> dict:
+    """Scroll the playlist: `bar` becomes its first bar, `track` comes into view."""
+    bar, track = params.get("bar"), params.get("track")
+    if bar is not None:
+        if not _whole(bar, 1, 100000):
+            return {"error": "bar must be a whole number of 1 or more, got %r" % (bar,)}
+        ui.scrollWindow(midi.widPlaylist, bar, 1)
+    if track is not None:
+        if not _whole(track, 1, playlist.trackCount()):
+            return {"error": "track must be 1-%d, got %r" % (playlist.trackCount(), track)}
+        ui.scrollWindow(midi.widPlaylist, track, 0)
+    return {"bar": bar, "track": track}
+
+
+def handle_playlist_get_selected_track(params: dict) -> dict:
+    """The selected playlist tracks (1-based), looking at tracks 1 to `upto`."""
+    count = playlist.trackCount()
+    upto = params.get("upto", count)
+    if not _whole(upto, 1, 100000):
+        return {"error": "upto must be a whole number of 1 or more, got %r" % (upto,)}
+    return {"selected": [i for i in range(1, min(upto, count) + 1) if playlist.isTrackSelected(i)]}
+
+
+def handle_playlist_deselect_tracks() -> dict:
+    """Deselect every playlist track, so the next header click shows what it selected."""
+    playlist.deselectAll()
+    return {"selected": []}
+
+
+def handle_playlist_get_song_position() -> dict:
+    """The song position in ticks. It never lies beyond the end of the last clip."""
+    return {"ticks": transport.getSongPos(midi.SONGLENGTH_ABSTICKS)}
+
+
+def handle_playlist_get_tracks(params: dict) -> dict:
+    """Names and mute state of the first `count` playlist tracks."""
+    count = params.get("count", 20)
+    if not _whole(count, 1, playlist.trackCount()):
+        return {"error": "count must be 1-%d, got %r" % (playlist.trackCount(), count)}
+    return {"tracks": [
+        {"track": i, "name": playlist.getTrackName(i), "is_muted": bool(playlist.isTrackMuted(i))}
+        for i in range(1, count + 1)
+    ]}
+
+
+def handle_playlist_set_track_name(params: dict) -> dict:
+    """Name a playlist track; an empty name resets it."""
+    track = params.get("track")
+    if not _whole(track, 1, playlist.trackCount()):
+        return {"error": "track must be 1-%d, got %r" % (playlist.trackCount(), track)}
+    playlist.setTrackName(track, str(params.get("name", "")))
+    return {"track": track, "name": playlist.getTrackName(track)}

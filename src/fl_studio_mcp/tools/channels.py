@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from fl_studio_mcp.utils.connection import call
+from fl_studio_mcp.utils.roles import resolve_channel
 from fl_studio_mcp.utils.step_params import step_from_fl, step_to_fl
 
 if TYPE_CHECKING:
@@ -110,12 +111,16 @@ def register_channel_tools(mcp: FastMCP) -> None:
         return f"Channel '{channel_name}' {'selected' if select else 'deselected'}"
 
     @mcp.tool()
-    def fl_select_one_channel(index: int) -> str:
+    def fl_select_one_channel(index: int | str) -> str:
         """Select only one channel, deselecting all others.
 
         Args:
-            index: Channel index (global) to select exclusively
+            index: Channel index (global) to select exclusively, or a role
         """
+        try:
+            index = resolve_channel(index)
+        except ValueError as e:
+            return f"Error: {e}"
         conn = get_connection()
         result = conn.send_command("channels.selectOne", {"index": index})
 
@@ -124,6 +129,20 @@ def register_channel_tools(mcp: FastMCP) -> None:
 
         channel_name = result.get("channel_name", f"Channel {index}")
         return f"Channel '{channel_name}' selected exclusively"
+
+    @mcp.tool()
+    def fl_show_channel_editor(channel: int | str, show: bool = True) -> dict:
+        """Show or hide a channel's plugin window (channel settings for samplers).
+
+        Args:
+            channel: Channel index (global, 0-based) or role (see fl_get_roles).
+            show: True to open the window, False to close it.
+        """
+        try:
+            channel = resolve_channel(channel)
+        except ValueError as e:
+            return {"error": str(e)}
+        return call("channels.showEditor", {"index": channel, "show": show})
 
     @mcp.tool()
     def fl_trigger_note(
@@ -171,16 +190,20 @@ def register_channel_tools(mcp: FastMCP) -> None:
         )
 
     @mcp.tool()
-    def fl_set_channel_volume(index: int, volume: float) -> str:
+    def fl_set_channel_volume(index: int | str, volume: float) -> str:
         """Set the volume of a channel.
 
         Args:
-            index: Channel index (global)
+            index: Channel index (global), or a role
             volume: Volume level from 0.0 (silence) to 1.0 (full)
         """
         if not 0.0 <= volume <= 1.0:
             return "Error: Volume must be between 0.0 and 1.0"
 
+        try:
+            index = resolve_channel(index)
+        except ValueError as e:
+            return f"Error: {e}"
         conn = get_connection()
         result = conn.send_command("channels.setVolume", {
             "index": index,
@@ -195,16 +218,20 @@ def register_channel_tools(mcp: FastMCP) -> None:
         return f"Channel '{channel_name}' volume set to {new_volume:.2f}"
 
     @mcp.tool()
-    def fl_set_channel_pan(index: int, pan: float) -> str:
+    def fl_set_channel_pan(index: int | str, pan: float) -> str:
         """Set the pan position of a channel.
 
         Args:
-            index: Channel index (global)
+            index: Channel index (global), or a role
             pan: Pan from -1.0 (full left) to 1.0 (full right), 0.0 = center
         """
         if not -1.0 <= pan <= 1.0:
             return "Error: Pan must be between -1.0 and 1.0"
 
+        try:
+            index = resolve_channel(index)
+        except ValueError as e:
+            return f"Error: {e}"
         conn = get_connection()
         result = conn.send_command("channels.setPan", {
             "index": index,
@@ -219,13 +246,17 @@ def register_channel_tools(mcp: FastMCP) -> None:
         return f"Channel '{channel_name}' pan set to {new_pan:.2f}"
 
     @mcp.tool()
-    def fl_mute_channel(index: int, muted: bool | None = None) -> str:
+    def fl_mute_channel(index: int | str, muted: bool | None = None) -> str:
         """Mute or unmute a channel.
 
         Args:
-            index: Channel index (global)
+            index: Channel index (global), or a role
             muted: True to mute, False to unmute, None to toggle
         """
+        try:
+            index = resolve_channel(index)
+        except ValueError as e:
+            return f"Error: {e}"
         conn = get_connection()
         result = conn.send_command("channels.mute", {
             "index": index,
@@ -240,13 +271,17 @@ def register_channel_tools(mcp: FastMCP) -> None:
         return f"Channel '{channel_name}' {'muted' if is_muted else 'unmuted'}"
 
     @mcp.tool()
-    def fl_solo_channel(index: int, solo: bool | None = None) -> str:
+    def fl_solo_channel(index: int | str, solo: bool | None = None) -> str:
         """Solo or unsolo a channel.
 
         Args:
-            index: Channel index (global)
+            index: Channel index (global), or a role
             solo: True to solo, False to unsolo, None to toggle
         """
+        try:
+            index = resolve_channel(index)
+        except ValueError as e:
+            return f"Error: {e}"
         conn = get_connection()
         result = conn.send_command("channels.solo", {
             "index": index,
@@ -261,13 +296,17 @@ def register_channel_tools(mcp: FastMCP) -> None:
         return f"Channel '{channel_name}' {'soloed' if is_solo else 'unsoloed'}"
 
     @mcp.tool()
-    def fl_set_channel_name(index: int, name: str) -> str:
+    def fl_set_channel_name(index: int | str, name: str) -> str:
         """Set the name of a channel.
 
         Args:
-            index: Channel index (global)
+            index: Channel index (global), or a role
             name: New name for the channel
         """
+        try:
+            index = resolve_channel(index)
+        except ValueError as e:
+            return f"Error: {e}"
         conn = get_connection()
         result = conn.send_command("channels.setName", {
             "index": index,
@@ -280,15 +319,19 @@ def register_channel_tools(mcp: FastMCP) -> None:
         return f"Channel {index} renamed to '{name}'"
 
     @mcp.tool()
-    def fl_set_channel_color(index: int, red: int, green: int, blue: int) -> str:
+    def fl_set_channel_color(index: int | str, red: int, green: int, blue: int) -> str:
         """Set the color of a channel.
 
         Args:
-            index: Channel index (global)
+            index: Channel index (global), or a role
             red: Red component (0-255)
             green: Green component (0-255)
             blue: Blue component (0-255)
         """
+        try:
+            index = resolve_channel(index)
+        except ValueError as e:
+            return f"Error: {e}"
         conn = get_connection()
         result = conn.send_command("channels.setColor", {
             "index": index,
@@ -303,13 +346,17 @@ def register_channel_tools(mcp: FastMCP) -> None:
         return f"Channel {index} color set to RGB({red}, {green}, {blue})"
 
     @mcp.tool()
-    def fl_route_channel_to_mixer(channel_index: int, mixer_track: int) -> str:
+    def fl_route_channel_to_mixer(channel_index: int | str, mixer_track: int) -> str:
         """Route a channel to a specific mixer track.
 
         Args:
-            channel_index: Channel index (global)
+            channel_index: Channel index (global), or a role
             mixer_track: Mixer track index to route to
         """
+        try:
+            channel_index = resolve_channel(channel_index)
+        except ValueError as e:
+            return f"Error: {e}"
         conn = get_connection()
         result = conn.send_command("channels.routeToMixer", {
             "channel_index": channel_index,
@@ -368,13 +415,19 @@ def register_channel_tools(mcp: FastMCP) -> None:
         return f"Channel '{channel_name}' step {position} {'enabled' if value else 'disabled'}"
 
     @mcp.tool()
-    def fl_get_step_sequence(channel: int, steps: int = 16) -> list[bool]:
+    def fl_get_step_sequence(channel: int | str, steps: int = 16) -> list[bool] | dict:
         """Get the step sequence pattern for a channel.
 
         Args:
-            channel: Channel index (global)
+            channel: Channel index (global) or role (see fl_get_roles)
             steps: Number of steps to retrieve (default 16)
+
+        Returns a list of on/off values, or {"error": ...}.
         """
+        try:
+            channel = resolve_channel(channel)
+        except ValueError as e:
+            return {"error": str(e)}
         conn = get_connection()
         result = conn.send_command("channels.getStepSequence", {
             "channel": channel,
@@ -382,18 +435,22 @@ def register_channel_tools(mcp: FastMCP) -> None:
         })
 
         if not result.get("success", False) and "error" in result:
-            return []
+            return {"error": result["error"]}
 
         return result.get("sequence", [])
 
     @mcp.tool()
-    def fl_set_step_sequence(channel: int, pattern: list[bool]) -> str:
+    def fl_set_step_sequence(channel: int | str, pattern: list[bool]) -> str:
         """Set a complete step sequence pattern for a channel.
 
         Args:
-            channel: Channel index (global)
+            channel: Channel index (global) or role (see fl_get_roles)
             pattern: List of boolean values for each step (True = on, False = off)
         """
+        try:
+            channel = resolve_channel(channel)
+        except ValueError as e:
+            return f"Error: {e}"
         conn = get_connection()
         result = conn.send_command("channels.setStepSequence", {
             "channel": channel,
@@ -411,7 +468,9 @@ def register_channel_tools(mcp: FastMCP) -> None:
         )
 
     @mcp.tool()
-    def fl_set_step_params(channel: int, steps: list[dict], pattern: int | None = None) -> dict:
+    def fl_set_step_params(
+        channel: int | str, steps: list[dict], pattern: int | None = None
+    ) -> dict:
         """Program step sequencer steps with per-step pitch, velocity, pan and more.
 
         Only the fields you give are changed. Each step dict:
@@ -424,7 +483,7 @@ def register_channel_tools(mcp: FastMCP) -> None:
             shift: delay in ticks (see ppq in fl_get_project_overview; one step = ppq/4)
 
         Args:
-            channel: Channel index (global, 0-based).
+            channel: Channel index (global, 0-based) or role (see fl_get_roles).
             steps: Steps to change, e.g. [{"step": 0, "on": true, "pitch": "C3",
                 "velocity": 1.0}, {"step": 4, "on": true, "velocity": 0.6}].
             pattern: Pattern to edit (1-based); it becomes the active pattern.
@@ -432,6 +491,7 @@ def register_channel_tools(mcp: FastMCP) -> None:
         """
         try:
             raw_steps = [step_to_fl(step) for step in steps]
+            channel = resolve_channel(channel)
         except ValueError as e:
             return {"error": str(e)}
         params = {"channel": channel, "steps": raw_steps}
@@ -440,16 +500,27 @@ def register_channel_tools(mcp: FastMCP) -> None:
         return call("channels.setStepParams", params)
 
     @mcp.tool()
-    def fl_get_step_params(channel: int, steps: int = 16) -> dict:
-        """Read step sequencer steps of the active pattern, with parameters of active steps.
+    def fl_get_step_params(
+        channel: int | str, steps: int = 16, pattern: int | None = None
+    ) -> dict:
+        """Read step sequencer steps of a pattern, with parameters of active steps.
 
         Values use the same units as fl_set_step_params.
 
         Args:
-            channel: Channel index (global, 0-based).
+            channel: Channel index (global, 0-based) or role (see fl_get_roles).
             steps: How many steps to read from the start of the pattern.
+            pattern: Pattern to read (1-based); it becomes the active pattern.
+                Default: the active pattern.
         """
-        result = call("channels.getStepParams", {"channel": channel, "steps": steps})
+        try:
+            channel = resolve_channel(channel)
+        except ValueError as e:
+            return {"error": str(e)}
+        params = {"channel": channel, "steps": steps}
+        if pattern is not None:
+            params["pattern"] = pattern
+        result = call("channels.getStepParams", params)
         if "error" in result:
             return result
         return {**result, "steps": [step_from_fl(step) for step in result.get("steps", [])]}

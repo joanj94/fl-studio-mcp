@@ -25,6 +25,12 @@ from fl_studio_mcp.music.model import DEFAULT_VELOCITY
 from fl_studio_mcp.utils.connection import call
 from fl_studio_mcp.utils.fl_trigger import get_trigger
 from fl_studio_mcp.utils.paths import atomic_write_json, get_piano_roll_scripts_dir
+from fl_studio_mcp.utils.piano_roll_menu import (
+    close_menus_left_open,
+    close_script_dialogs,
+    run_script_from_menu,
+)
+from fl_studio_mcp.utils.roles import resolve_channel
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -156,21 +162,39 @@ def _describe_response(response: dict) -> str:
 
 
 def _trigger(request_ids: list[str]) -> tuple[dict | None, str]:
-    """Trigger the piano roll script and wait for it to confirm request_ids.
+    """Run the piano roll script and wait for it to confirm request_ids.
+
+    On Windows the script is run from the piano roll's menu, which needs no
+    focus. Where that isn't possible, FL is brought to the front and sent the
+    "run last script again" shortcut, which only works once the script has been
+    run from the menu in that FL session.
 
     Returns FL's response (None if there is none) and a message for the AI.
     """
     trigger = get_trigger()
-    if not trigger.is_supported:
-        return None, (
-            f" Auto-trigger not supported on {trigger.platform}. Press the trigger key manually."
-        )
-    if not trigger.trigger(0):
-        return None, f" Warning: Could not trigger FL Studio. Press {trigger.keystroke} manually."
+    ran_from_menu = run_script_from_menu()
+    if not ran_from_menu:
+        if not trigger.is_supported:
+            return None, (
+                f" Auto-trigger not supported on {trigger.platform}. "
+                "Press the trigger key manually."
+            )
+        if not trigger.trigger(0):
+            return None, (
+                f" Warning: Could not trigger FL Studio. Press {trigger.keystroke} manually."
+            )
     if not request_ids:
         return None, " FL Studio triggered (no pending requests)."
 
     response = _wait_for_response(request_ids, RESPONSE_TIMEOUT)
+    if response is None and ran_from_menu:
+        close_menus_left_open()
+    if response is None and ran_from_menu and close_script_dialogs():
+        return None, (
+            " Warning: the menu walk reached another piano roll script, whose settings window "
+            "was closed without applying it. The requests stay queued: try again, and keep "
+            "the mouse away from FL Studio's menus while notes are being written."
+        )
     if response is None:
         return None, (
             f" Warning: FL Studio did not respond within {RESPONSE_TIMEOUT}s. Make sure a "
@@ -212,10 +236,49 @@ def _prepare_note(note: dict) -> dict:
                 f"got {cents!r}"
             )
         prepared["pitchofs"] = round(cents / CENTS_PER_PITCHOFS)
+    elif "pitchofs" in note:
+        # Read-back notes carry FL's own unit; keep it so a note can be resent unchanged.
+        pitchofs = note["pitchofs"]
+        limit = MAX_FINE_PITCH_CENTS // CENTS_PER_PITCHOFS
+        if not _is_number(pitchofs) or not -limit <= pitchofs <= limit:
+            raise ValueError(f"'pitchofs' must be -{limit} to {limit}, got {pitchofs!r}")
+        prepared["pitchofs"] = round(pitchofs)
     return prepared
 
 
-def _select_target(channel: int | None, pattern: int | None) -> str | None:
+def read_notes(channel: int, pattern: int) -> list[dict]:
+    """The notes of one channel's piano roll in one pattern, read fresh from FL.
+
+    Raises ValueError with the reason if FL can't be reached or reports an error.
+    """
+    target_error = _select_target(channel, pattern)
+    if target_error:
+        raise ValueError(target_error)
+    response, message = _trigger(_write_request({"action": "read"}))
+    if response is None or response.get("status") == "error":
+        raise ValueError(message.strip())
+    state = _read_state()
+    if state is None:
+        raise ValueError("FL Studio exported no piano roll state")
+    return state.get("notes", [])
+
+
+def write_notes(notes: list[dict], channel: int, pattern: int) -> None:
+    """Replace one channel's piano roll in one pattern with `notes` (may be empty).
+
+    Raises ValueError with the reason if a note is invalid or FL doesn't confirm.
+    """
+    prepared = [_prepare_note(note) for note in notes]
+    target_error = _select_target(channel, pattern)
+    if target_error:
+        raise ValueError(target_error)
+    add = [{"action": "add_notes", "notes": prepared}] if prepared else []
+    response, message = _trigger(_write_request([{"action": "clear"}, *add]))
+    if response is None or response.get("status") == "error":
+        raise ValueError(message.strip())
+
+
+def _select_target(channel: int | str | None, pattern: int | None) -> str | None:
     """Make the channel, then the pattern, active so the piano roll edits them.
 
     The channel goes first: a bad channel index then fails before the project's
@@ -224,7 +287,11 @@ def _select_target(channel: int | None, pattern: int | None) -> str | None:
     Returns an error message, or None when the target is selected.
     """
     if channel is not None:
-        result = call("channels.selectOne", {"index": channel})
+        try:
+            channel = resolve_channel(channel)
+        except ValueError as e:
+            return str(e)
+        result = call("channels.showInPianoRoll", {"index": channel})
         if "error" in result:
             return result["error"]
     if pattern is not None:
@@ -249,7 +316,7 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
         notes: list[dict],
         mode: str = "add",
         auto_trigger: bool = True,
-        channel: int | None = None,
+        channel: int | str | None = None,
         pattern: int | None = None,
     ) -> str:
         """Add or replace notes in the FL Studio piano roll.
@@ -271,7 +338,8 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
                    Other fields (e.g. note_name from fl_get_piano_roll_state) are ignored.
             mode: "add" to add notes, "replace" to clear existing notes first
             auto_trigger: Whether to automatically trigger FL Studio (default True)
-            channel: Channel index (0-based) to write to; default: the selected one.
+            channel: Channel index (0-based) or role (see fl_get_roles) to write to;
+                default: the selected one.
             pattern: Pattern index (1-based) to write to; default: the active one.
 
         Example notes:
@@ -325,7 +393,7 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
         duration: float = 1.0,
         velocity: float = 0.8,
         auto_trigger: bool = True,
-        channel: int | None = None,
+        channel: int | str | None = None,
         pattern: int | None = None,
     ) -> str:
         """Add a chord (multiple simultaneous notes) to the FL Studio piano roll.
@@ -339,7 +407,8 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
             duration: Length in quarter notes for all notes (default 1.0)
             velocity: Velocity 0.0-1.0 for all notes (default 0.8)
             auto_trigger: Whether to automatically trigger FL Studio
-            channel: Channel index (0-based) to write to; default: the selected one.
+            channel: Channel index (0-based) or role (see fl_get_roles) to write to;
+                default: the selected one.
             pattern: Pattern index (1-based) to write to; default: the active one.
 
         Example - C major chord at beat 0:
@@ -378,7 +447,7 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
     def fl_delete_notes(
         notes: list[dict],
         auto_trigger: bool = True,
-        channel: int | None = None,
+        channel: int | str | None = None,
         pattern: int | None = None,
     ) -> str:
         """Delete specific notes from the FL Studio piano roll.
@@ -388,7 +457,7 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
                    - midi (int): MIDI note number
                    - time (float): Start position in quarter notes
             auto_trigger: Whether to automatically trigger FL Studio
-            channel: Channel index (0-based); default: the selected one.
+            channel: Channel index (0-based) or role; default: the selected one.
             pattern: Pattern index (1-based); default: the active one.
 
         Example:
@@ -413,14 +482,14 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
     @mcp.tool()
     def fl_clear_piano_roll(
         auto_trigger: bool = True,
-        channel: int | None = None,
+        channel: int | str | None = None,
         pattern: int | None = None,
     ) -> str:
         """Clear all notes from the FL Studio piano roll.
 
         Args:
             auto_trigger: Whether to automatically trigger FL Studio
-            channel: Channel index (0-based); default: the selected one.
+            channel: Channel index (0-based) or role; default: the selected one.
             pattern: Pattern index (1-based); default: the active one.
         """
         target_error = _select_target(channel, pattern)
@@ -434,9 +503,9 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def fl_get_piano_roll_state(
-        channel: int | None = None,
+        channel: int | str | None = None,
         pattern: int | None = None,
-        refresh: bool = False,
+        refresh: bool = True,
     ) -> dict:
         """Get the notes in an FL Studio piano roll.
 
@@ -444,14 +513,15 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
         - ppq: Pulses per quarter note (ticks per beat)
         - notes: List of all notes with their properties (times in quarter notes)
 
-        With `channel` or `pattern`, that target is selected and read fresh from
-        FL. Otherwise the state exported by the last piano roll run is returned,
-        unless `refresh` is true.
+        Reads fresh from FL: the piano roll showing `channel` in `pattern`, or
+        whatever it shows now. With refresh=False, returns the state exported by
+        the last piano roll run instead (no FL round trip; may be stale).
 
         Args:
-            channel: Channel index (0-based) to read.
+            channel: Channel index (0-based) or role to read.
             pattern: Pattern index (1-based) to read.
-            refresh: Re-read the current piano roll from FL before returning.
+            refresh: Ask FL for the current notes (default). False returns the
+                last exported state.
         """
         if channel is not None or pattern is not None or refresh:
             target_error = _select_target(channel, pattern)

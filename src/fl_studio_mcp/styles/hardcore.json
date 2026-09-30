@@ -1,0 +1,44 @@
+{
+  "name": "hardcore",
+  "title": "Hardcore",
+  "description": "Fast four-on-the-floor music with a heavily distorted kick, dark or anthemic leads and screeches. Covers mainstream hardcore; uptempo and frenchcore push the same ideas further.",
+  "tempo": {"min": 160, "max": 220, "typical": 175},
+  "time_signature": "4/4",
+  "scales": ["minor", "harmonic_minor", "phrygian", "phrygian_dominant"],
+  "roles": {
+    "required": ["kick", "lead"],
+    "optional": ["bass", "hihat", "clap", "snare", "screech", "pad", "vocal", "fx"]
+  },
+  "structure": [
+    {"section": "intro", "bars": 32, "description": "Kick and percussion for mixing in; tease the main motif late in the intro."},
+    {"section": "break", "bars": 16, "description": "Kick out; atmosphere, pads or a vocal set the mood."},
+    {"section": "build-up", "bars": 8, "description": "Kick roll or snare roll speeding up into the drop."},
+    {"section": "drop", "bars": 32, "description": "Kick on every beat with the main lead or screech riff; short phrases repeated with variations."},
+    {"section": "breakdown", "bars": 16, "description": "Melodic section with the main melody over chords, kick out or half-time."},
+    {"section": "build-up 2", "bars": 8, "description": "Shorter and more intense than the first."},
+    {"section": "drop 2", "bars": 32, "description": "Main riff again, with a variation or a new layer."},
+    {"section": "outro", "bars": 16, "description": "Kick and percussion for mixing out."}
+  ],
+  "rhythms": [
+    {"name": "four on the floor", "role": "kick", "grid": "X...X...X...X...", "description": "Kick on every beat through drops, intros and outros."},
+    {"name": "kick gallop fill", "role": "kick", "grid": "X...X...X...X.xx", "description": "Extra 16th kicks at the end of the bar to mark a phrase ending."},
+    {"name": "offbeat bass", "role": "bass", "grid": "..x...x...x...x.", "description": "Bass on the off-beat 8ths between kicks, the frenchcore signature."},
+    {"name": "offbeat hi-hat", "role": "hihat", "grid": "..x...x...x...x.", "description": "Open hat on every off-beat."},
+    {"name": "kick roll", "role": "kick", "grid": "x.x.x.x.x.x.x.x.|xxxxxxxxxxxxxxxx", "description": "Two-bar roll into a drop; music_roll gives smooth acceleration."},
+    {"name": "stab riff", "role": "lead", "grid": "X..X..X.X..X..X.", "description": "Short syncopated lead or screech stabs against the kick."}
+  ],
+  "progressions": [
+    {"chords": ["i", "VI", "III", "VII"], "scale": "minor", "description": "Anthemic loop for melodic breakdowns."},
+    {"chords": ["i", "VI", "VII", "V"], "scale": "minor", "description": "Dramatic ending on a major V, borrowed from harmonic minor (its raised 7th is the leading tone back to i)."},
+    {"chords": ["i", "II", "i", "II"], "scale": "phrygian", "description": "Dark flat-2 alternation for drops."},
+    {"chords": ["I", "II", "iv", "I"], "scale": "phrygian_dominant", "description": "Eastern-sounding darkness with a major tonic."}
+  ],
+  "guidance": [
+    "The kick is harder and more distorted than in hardstyle, with a punchy, often less tonal tail; still tune it to the key's root.",
+    "At these tempos melodies breathe: fewer, longer notes and repeated short riffs read better than busy lines.",
+    "Drops lean on rhythm: short lead or screech stabs in syncopation with the kick, repeated and varied every 4 or 8 bars.",
+    "Build tension with kick rolls that speed up (music_roll) and end with a short gap before the drop.",
+    "Uptempo (roughly 190-220 BPM) uses extremely distorted kicks, often with the kick itself carrying a melody. Frenchcore (roughly 190-200 BPM) adds the offbeat bass and often live-sounding drums, pianos or strings.",
+    "Work in 8, 16 and 32-bar phrases and change something at each boundary."
+  ]
+}
