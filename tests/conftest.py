@@ -25,6 +25,21 @@ def _load_source(name: str, path: Path) -> ModuleType:
     return module
 
 
+@pytest.fixture(autouse=True)
+def no_real_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test may drive the real keyboard or mouse (FL Studio could be running)."""
+    from fl_studio_mcp.tools import piano_roll
+    from fl_studio_mcp.utils import fl_keys, fl_render, piano_roll_menu
+
+    def refuse(*args: object) -> None:
+        raise AssertionError("a test tried to use the real keyboard or mouse")
+
+    monkeypatch.setattr(fl_keys, "_keyboard", refuse)
+    monkeypatch.setattr(fl_render, "_keyboard", refuse)
+    monkeypatch.setattr(piano_roll_menu, "_devices", refuse)
+    monkeypatch.setattr(piano_roll, "run_script_from_menu", lambda: False)
+
+
 @pytest.fixture
 def fl_modules(monkeypatch: pytest.MonkeyPatch) -> dict:
     modules = make_controller_modules()

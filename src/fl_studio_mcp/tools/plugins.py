@@ -8,8 +8,25 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from fl_studio_mcp.utils.roles import resolve_channel
+
 if TYPE_CHECKING:
     from fastmcp import FastMCP
+
+
+def _plugin_index(index: int | str, slot_index: int) -> int:
+    """Channel index for a channel plugin (roles allowed), or the mixer track index.
+
+    Mixer effects (slot_index 0 or more) are addressed by track number only.
+    Raises ValueError if the value can't be resolved.
+    """
+    if slot_index < 0:
+        return resolve_channel(index)
+    if isinstance(index, int) and not isinstance(index, bool):
+        return index
+    if isinstance(index, str) and index.strip().isdigit():
+        return int(index.strip())
+    raise ValueError(f"A mixer track must be given by its number, got {index!r}")
 
 
 def register_plugin_tools(mcp: FastMCP) -> None:
@@ -18,7 +35,7 @@ def register_plugin_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def fl_is_plugin_valid(
-        index: int,
+        index: int | str,
         slot_index: int = -1,
         use_global_index: bool = True
     ) -> bool:
@@ -28,10 +45,14 @@ def register_plugin_tools(mcp: FastMCP) -> None:
         For mixer effect plugins, use index as mixer track and slot_index as effect slot.
 
         Args:
-            index: Channel index (global) or mixer track index
+            index: Channel index (global) or role, or mixer track index
             slot_index: Effect slot index for mixer plugins (-1 for channel rack)
             use_global_index: Whether to use global channel indexing
         """
+        try:
+            index = _plugin_index(index, slot_index)
+        except ValueError:
+            return False
         conn = get_connection()
         result = conn.send_command("plugins.isValid", {
             "index": index,
@@ -46,17 +67,21 @@ def register_plugin_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def fl_get_plugin_name(
-        index: int,
+        index: int | str,
         slot_index: int = -1,
         use_global_index: bool = True
     ) -> str:
         """Get the name of a plugin.
 
         Args:
-            index: Channel index (global) or mixer track index
+            index: Channel index (global) or role, or mixer track index
             slot_index: Effect slot index for mixer plugins (-1 for channel rack)
             use_global_index: Whether to use global channel indexing
         """
+        try:
+            index = _plugin_index(index, slot_index)
+        except ValueError as e:
+            return f"Error: {e}"
         conn = get_connection()
         result = conn.send_command("plugins.getName", {
             "index": index,
@@ -71,17 +96,21 @@ def register_plugin_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def fl_get_plugin_param_count(
-        index: int,
+        index: int | str,
         slot_index: int = -1,
         use_global_index: bool = True
     ) -> int:
         """Get the number of parameters a plugin has.
 
         Args:
-            index: Channel index (global) or mixer track index
+            index: Channel index (global) or role, or mixer track index
             slot_index: Effect slot index for mixer plugins (-1 for channel rack)
             use_global_index: Whether to use global channel indexing
         """
+        try:
+            index = _plugin_index(index, slot_index)
+        except ValueError:
+            return -1
         conn = get_connection()
         result = conn.send_command("plugins.getParamCount", {
             "index": index,
@@ -96,7 +125,7 @@ def register_plugin_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def fl_get_plugin_params(
-        index: int,
+        index: int | str,
         slot_index: int = -1,
         use_global_index: bool = True,
         max_params: int = 50
@@ -104,11 +133,15 @@ def register_plugin_tools(mcp: FastMCP) -> None:
         """Get all parameters of a plugin with their current values.
 
         Args:
-            index: Channel index (global) or mixer track index
+            index: Channel index (global) or role, or mixer track index
             slot_index: Effect slot index for mixer plugins (-1 for channel rack)
             use_global_index: Whether to use global channel indexing
             max_params: Maximum number of parameters to return (default 50)
         """
+        try:
+            index = _plugin_index(index, slot_index)
+        except ValueError as e:
+            return [{"error": str(e)}]
         conn = get_connection()
         result = conn.send_command("plugins.getParams", {
             "index": index,
@@ -125,7 +158,7 @@ def register_plugin_tools(mcp: FastMCP) -> None:
     @mcp.tool()
     def fl_get_plugin_param_value(
         param_index: int,
-        plugin_index: int,
+        plugin_index: int | str,
         slot_index: int = -1,
         use_global_index: bool = True
     ) -> dict:
@@ -133,10 +166,14 @@ def register_plugin_tools(mcp: FastMCP) -> None:
 
         Args:
             param_index: Parameter index
-            plugin_index: Channel index (global) or mixer track index
+            plugin_index: Channel index (global) or role, or mixer track index
             slot_index: Effect slot index for mixer plugins (-1 for channel rack)
             use_global_index: Whether to use global channel indexing
         """
+        try:
+            plugin_index = _plugin_index(plugin_index, slot_index)
+        except ValueError as e:
+            return {"error": str(e)}
         conn = get_connection()
         result = conn.send_command("plugins.getParamValue", {
             "param_index": param_index,
@@ -159,7 +196,7 @@ def register_plugin_tools(mcp: FastMCP) -> None:
     def fl_set_plugin_param_value(
         param_index: int,
         value: float,
-        plugin_index: int,
+        plugin_index: int | str,
         slot_index: int = -1,
         use_global_index: bool = True
     ) -> str:
@@ -168,10 +205,14 @@ def register_plugin_tools(mcp: FastMCP) -> None:
         Args:
             param_index: Parameter index
             value: New value (typically 0.0 to 1.0, but depends on parameter)
-            plugin_index: Channel index (global) or mixer track index
+            plugin_index: Channel index (global) or role, or mixer track index
             slot_index: Effect slot index for mixer plugins (-1 for channel rack)
             use_global_index: Whether to use global channel indexing
         """
+        try:
+            plugin_index = _plugin_index(plugin_index, slot_index)
+        except ValueError as e:
+            return f"Error: {e}"
         conn = get_connection()
         result = conn.send_command("plugins.setParamValue", {
             "param_index": param_index,
@@ -191,17 +232,21 @@ def register_plugin_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def fl_get_preset_count(
-        index: int,
+        index: int | str,
         slot_index: int = -1,
         use_global_index: bool = True
     ) -> int:
         """Get the number of presets available for a plugin.
 
         Args:
-            index: Channel index (global) or mixer track index
+            index: Channel index (global) or role, or mixer track index
             slot_index: Effect slot index for mixer plugins (-1 for channel rack)
             use_global_index: Whether to use global channel indexing
         """
+        try:
+            index = _plugin_index(index, slot_index)
+        except ValueError:
+            return -1
         conn = get_connection()
         result = conn.send_command("plugins.getPresetCount", {
             "index": index,
@@ -216,17 +261,21 @@ def register_plugin_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def fl_next_preset(
-        index: int,
+        index: int | str,
         slot_index: int = -1,
         use_global_index: bool = True
     ) -> str:
         """Switch to the next preset for a plugin.
 
         Args:
-            index: Channel index (global) or mixer track index
+            index: Channel index (global) or role, or mixer track index
             slot_index: Effect slot index for mixer plugins (-1 for channel rack)
             use_global_index: Whether to use global channel indexing
         """
+        try:
+            index = _plugin_index(index, slot_index)
+        except ValueError as e:
+            return f"Error: {e}"
         conn = get_connection()
         result = conn.send_command("plugins.nextPreset", {
             "index": index,
@@ -242,17 +291,21 @@ def register_plugin_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def fl_prev_preset(
-        index: int,
+        index: int | str,
         slot_index: int = -1,
         use_global_index: bool = True
     ) -> str:
         """Switch to the previous preset for a plugin.
 
         Args:
-            index: Channel index (global) or mixer track index
+            index: Channel index (global) or role, or mixer track index
             slot_index: Effect slot index for mixer plugins (-1 for channel rack)
             use_global_index: Whether to use global channel indexing
         """
+        try:
+            index = _plugin_index(index, slot_index)
+        except ValueError as e:
+            return f"Error: {e}"
         conn = get_connection()
         result = conn.send_command("plugins.prevPreset", {
             "index": index,
@@ -268,17 +321,21 @@ def register_plugin_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def fl_get_plugin_color(
-        index: int,
+        index: int | str,
         slot_index: int = -1,
         use_global_index: bool = True
     ) -> str:
         """Get the color of a plugin.
 
         Args:
-            index: Channel index (global) or mixer track index
+            index: Channel index (global) or role, or mixer track index
             slot_index: Effect slot index for mixer plugins (-1 for channel rack)
             use_global_index: Whether to use global channel indexing
         """
+        try:
+            index = _plugin_index(index, slot_index)
+        except ValueError as e:
+            return f"Error: {e}"
         conn = get_connection()
         result = conn.send_command("plugins.getColor", {
             "index": index,

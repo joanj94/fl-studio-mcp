@@ -25,6 +25,7 @@ from fl_studio_mcp.music.model import DEFAULT_VELOCITY
 from fl_studio_mcp.utils.connection import call
 from fl_studio_mcp.utils.fl_trigger import get_trigger
 from fl_studio_mcp.utils.paths import atomic_write_json, get_piano_roll_scripts_dir
+from fl_studio_mcp.utils.piano_roll_menu import run_script_from_menu
 from fl_studio_mcp.utils.roles import resolve_channel
 
 if TYPE_CHECKING:
@@ -172,6 +173,10 @@ def _trigger(request_ids: list[str]) -> tuple[dict | None, str]:
         return None, " FL Studio triggered (no pending requests)."
 
     response = _wait_for_response(request_ids, RESPONSE_TIMEOUT)
+    if response is None and run_script_from_menu():
+        # The shortcut re-runs the last script, so it does nothing until the script
+        # has been run from the menu once in this FL session.
+        response = _wait_for_response(request_ids, RESPONSE_TIMEOUT)
     if response is None:
         return None, (
             f" Warning: FL Studio did not respond within {RESPONSE_TIMEOUT}s. Make sure a "
@@ -213,7 +218,46 @@ def _prepare_note(note: dict) -> dict:
                 f"got {cents!r}"
             )
         prepared["pitchofs"] = round(cents / CENTS_PER_PITCHOFS)
+    elif "pitchofs" in note:
+        # Read-back notes carry FL's own unit; keep it so a note can be resent unchanged.
+        pitchofs = note["pitchofs"]
+        limit = MAX_FINE_PITCH_CENTS // CENTS_PER_PITCHOFS
+        if not _is_number(pitchofs) or not -limit <= pitchofs <= limit:
+            raise ValueError(f"'pitchofs' must be -{limit} to {limit}, got {pitchofs!r}")
+        prepared["pitchofs"] = round(pitchofs)
     return prepared
+
+
+def read_notes(channel: int, pattern: int) -> list[dict]:
+    """The notes of one channel's piano roll in one pattern, read fresh from FL.
+
+    Raises ValueError with the reason if FL can't be reached or reports an error.
+    """
+    target_error = _select_target(channel, pattern)
+    if target_error:
+        raise ValueError(target_error)
+    response, message = _trigger(_write_request({"action": "read"}))
+    if response is None or response.get("status") == "error":
+        raise ValueError(message.strip())
+    state = _read_state()
+    if state is None:
+        raise ValueError("FL Studio exported no piano roll state")
+    return state.get("notes", [])
+
+
+def write_notes(notes: list[dict], channel: int, pattern: int) -> None:
+    """Replace one channel's piano roll in one pattern with `notes` (may be empty).
+
+    Raises ValueError with the reason if a note is invalid or FL doesn't confirm.
+    """
+    prepared = [_prepare_note(note) for note in notes]
+    target_error = _select_target(channel, pattern)
+    if target_error:
+        raise ValueError(target_error)
+    add = [{"action": "add_notes", "notes": prepared}] if prepared else []
+    response, message = _trigger(_write_request([{"action": "clear"}, *add]))
+    if response is None or response.get("status") == "error":
+        raise ValueError(message.strip())
 
 
 def _select_target(channel: int | str | None, pattern: int | None) -> str | None:

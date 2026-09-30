@@ -127,6 +127,20 @@ def register_channel_tools(mcp: FastMCP) -> None:
         return f"Channel '{channel_name}' selected exclusively"
 
     @mcp.tool()
+    def fl_show_channel_editor(channel: int | str, show: bool = True) -> dict:
+        """Show or hide a channel's plugin window (channel settings for samplers).
+
+        Args:
+            channel: Channel index (global, 0-based) or role (see fl_get_roles).
+            show: True to open the window, False to close it.
+        """
+        try:
+            channel = resolve_channel(channel)
+        except ValueError as e:
+            return {"error": str(e)}
+        return call("channels.showEditor", {"index": channel, "show": show})
+
+    @mcp.tool()
     def fl_trigger_note(
         channel: int,
         note: int,
@@ -454,20 +468,27 @@ def register_channel_tools(mcp: FastMCP) -> None:
         return call("channels.setStepParams", params)
 
     @mcp.tool()
-    def fl_get_step_params(channel: int | str, steps: int = 16) -> dict:
-        """Read step sequencer steps of the active pattern, with parameters of active steps.
+    def fl_get_step_params(
+        channel: int | str, steps: int = 16, pattern: int | None = None
+    ) -> dict:
+        """Read step sequencer steps of a pattern, with parameters of active steps.
 
         Values use the same units as fl_set_step_params.
 
         Args:
             channel: Channel index (global, 0-based) or role (see fl_get_roles).
             steps: How many steps to read from the start of the pattern.
+            pattern: Pattern to read (1-based); it becomes the active pattern.
+                Default: the active pattern.
         """
         try:
             channel = resolve_channel(channel)
         except ValueError as e:
             return {"error": str(e)}
-        result = call("channels.getStepParams", {"channel": channel, "steps": steps})
+        params = {"channel": channel, "steps": steps}
+        if pattern is not None:
+            params["pattern"] = pattern
+        result = call("channels.getStepParams", params)
         if "error" in result:
             return result
         return {**result, "steps": [step_from_fl(step) for step in result.get("steps", [])]}

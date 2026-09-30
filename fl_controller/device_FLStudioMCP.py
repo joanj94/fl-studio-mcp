@@ -243,6 +243,8 @@ def dispatch_command(action: str, params: dict) -> dict:
         return handle_channels_select(params)
     elif action == "channels.showInPianoRoll":
         return handle_channels_show_in_piano_roll(params)
+    elif action == "channels.showEditor":
+        return handle_channels_show_editor(params)
     elif action == "channels.selectOne":
         return handle_channels_select_one(params)
     elif action == "channels.triggerNote":
@@ -637,6 +639,17 @@ def handle_channels_show_in_piano_roll(params: dict) -> dict:
     return {"channel_name": channels.getChannelName(index, True)}
 
 
+def handle_channels_show_editor(params: dict) -> dict:
+    """Show or hide a channel's plugin (or channel settings) window."""
+    index = params.get("index")
+    count = channels.channelCount(True)
+    if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < count:
+        return {"error": "Channel index must be 0-%d, got %r" % (count - 1, index)}
+    show = bool(params.get("show", True))
+    channels.showEditor(index, 1 if show else 0, True)
+    return {"shown": show, "channel_name": channels.getChannelName(index, True)}
+
+
 def handle_channels_select_one(params: dict) -> dict:
     """Select only one channel, deselecting others."""
     index = params.get("index", 0)
@@ -751,12 +764,22 @@ def handle_channels_get_grid_bit(params: dict) -> dict:
     return {"value": channels.getGridBit(channel, position, True) == 1}
 
 
+def _set_grid_bit(channel: int, position: int, on) -> None:
+    """Switch a step on or off, leaving it alone if it already is.
+
+    Seen live in FL 2026: setGridBit(1) on a step that is already on adds a
+    second note to that step each time, so the state is checked first.
+    """
+    if (channels.getGridBit(channel, position, True) == 1) != bool(on):
+        channels.setGridBit(channel, position, 1 if on else 0, True)
+
+
 def handle_channels_set_grid_bit(params: dict) -> dict:
     """Set a step on or off."""
     channel = params.get("channel", 0)
     position = params.get("position", 0)
     value = params.get("value", False)
-    channels.setGridBit(channel, position, 1 if value else 0, True)
+    _set_grid_bit(channel, position, value)
     return {
         "value": value,
         "channel_name": channels.getChannelName(channel, True),
@@ -781,7 +804,7 @@ def handle_channels_set_step_sequence(params: dict) -> dict:
     pattern = params.get("pattern", [])
 
     for i, value in enumerate(pattern):
-        channels.setGridBit(channel, i, 1 if value else 0, True)
+        _set_grid_bit(channel, i, value)
 
     active_steps = sum(pattern)
     return {
@@ -834,7 +857,7 @@ def handle_channels_set_step_params(params: dict) -> dict:
     for step in steps:
         position = step["step"]
         if "on" in step:
-            channels.setGridBit(channel, position, 1 if step["on"] else 0, True)
+            _set_grid_bit(channel, position, step["on"])
         for name, param_id in STEP_PARAMS.items():
             if name in step:
                 value = step[name]
@@ -852,8 +875,15 @@ def handle_channels_set_step_params(params: dict) -> dict:
 
 
 def handle_channels_get_step_params(params: dict) -> dict:
-    """Grid bits of the current pattern, with every step parameter of active steps."""
+    """Grid bits and, for active steps, every step parameter.
+
+    FL only reads the current pattern, so a given pattern is selected first.
+    """
     channel = params.get("channel", 0)
+    if params.get("pattern") is not None:
+        selected = handle_patterns_select({"index": params["pattern"]})
+        if "error" in selected:
+            return selected
     ticks_per_step = _ticks_per_step()
     steps = []
 
@@ -927,11 +957,16 @@ def handle_project_get_info() -> dict:
 # =============================================================================
 
 
+# Step sequencer steps (16th notes) in a beat.
+STEPS_PER_BEAT = 4
+
+
 def _pattern_info(index: int, current: int) -> dict:
     return {
         "index": index,
         "name": patterns.getPatternName(index),
-        "length_beats": patterns.getPatternLength(index),
+        # Seen live in FL 2026, unlike the API docs: getPatternLength counts steps.
+        "length_beats": patterns.getPatternLength(index) / STEPS_PER_BEAT,
         "is_current": index == current,
     }
 

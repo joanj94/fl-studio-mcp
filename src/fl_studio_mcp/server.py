@@ -21,6 +21,9 @@ from __future__ import annotations
 from fastmcp import FastMCP
 
 from fl_studio_mcp.tools import (
+    register_arrange_tools,
+    register_audio_tools,
+    register_channel_setup_tools,
     register_channel_tools,
     register_mixer_tools,
     register_music_tools,
@@ -58,18 +61,28 @@ Available tool categories:
 - Mixer: Volume, pan, mute, solo, track management
 - Channels: Channel info, note triggering, step sequencer incl. per-step pitch,
   velocity and pan (fl_set_step_params)
-- Plugins: Parameter control, preset navigation (cannot load new plugins)
+- Channel setup: fl_add_channel adds a channel with an instrument plugin from
+  fl_list_generators. It types into FL's plugin picker, so FL comes to the front.
+- Plugins: Parameter control, preset navigation
 - Piano roll: Write, delete and read persistent notes (fl_send_notes, ...). Pass
   channel/pattern to aim at a roll; notes may carry pan, slide, porta, fine_pitch
   (cents) and more.
+- Arrangement and feedback: fl_arrange builds a song from patterns (sections of
+  looped patterns written into one long pattern; play it in pattern mode).
+  fl_render renders what FL would play to a WAV and returns measurements
+  (loudness, peaks, frequency balance, stereo image, key, loudness over time);
+  audio_analyze measures any WAV. You can't hear the result, so use them to
+  check your work: render, read the numbers, adjust levels or notes, render again.
 - Music (music_*): Build notes from scales, chords, roman numerals, scale degrees,
   rhythm grids and rolls, and transform them (arpeggiate, transpose, humanize, ...).
   These don't touch FL Studio; their output goes straight into fl_send_notes.
   Call music_reference once to see the vocabulary. Pitch names use C4 = MIDI 60.
 
 Important limitations:
-1. Cannot load new VST/AU plugins - only control existing ones
-2. Cannot place pattern clips in the playlist or create automation
+1. Cannot load effects, samples or presets - fl_add_channel only adds an
+   instrument plugin in its default state
+2. Cannot place pattern clips in the playlist or create automation. To build a
+   song, fl_arrange writes sections of looped patterns into one long pattern.
 3. Note triggering (fl_trigger_note) is real-time only - notes won't persist
    unless FL Studio is recording. Use step sequencer (fl_set_grid_bit) for
    persistent drum patterns.
@@ -161,8 +174,11 @@ def fl_connection_status() -> dict:
 register_transport_tools(mcp)
 register_mixer_tools(mcp)
 register_channel_tools(mcp)
+register_channel_setup_tools(mcp)
 register_plugin_tools(mcp)
 register_piano_roll_tools(mcp)
+register_arrange_tools(mcp)
+register_audio_tools(mcp)
 register_music_tools(mcp)
 register_project_tools(mcp)
 register_pattern_tools(mcp)

@@ -8,11 +8,16 @@ from __future__ import annotations
 
 import platform
 import subprocess
+import threading
 import time
 from typing import Callable
 
 # Delay after triggering to allow FL Studio to process
 TRIGGER_DELAY = 2.0
+
+# Held while keys are being sent to FL Studio, so two tools never interleave
+# their keystrokes. Re-entrant: a tool holding it may call trigger().
+keyboard_lock = threading.RLock()
 
 
 class FLStudioTrigger:
@@ -91,61 +96,55 @@ class FLStudioTrigger:
     def _focus_fl_studio_windows(self) -> bool:
         """Bring the FL Studio window to the foreground on Windows.
 
-        The keystroke that triggers the ComposeWithLLM script is delivered to
-        whichever window has focus, so FL Studio must be foregrounded first
-        (mirroring the ``activate`` step used on macOS). Uses only ctypes/user32
-        so no extra dependency is required.
-
-        Returns:
-            True if an FL Studio window was found and foregrounded, else False.
+        Keystrokes are delivered to whichever window has focus, so this only
+        returns True once Windows confirms FL Studio is the foreground window
+        (see ``utils/win_focus.py``).
         """
         try:
-            import ctypes
-            from ctypes import wintypes
+            from fl_studio_mcp.utils.win_focus import focus_fl_studio
 
-            user32 = ctypes.windll.user32
-
-            found = {"hwnd": None}
-
-            EnumWindowsProc = ctypes.WINFUNCTYPE(
-                ctypes.c_bool, wintypes.HWND, wintypes.LPARAM
-            )
-
-            def _enum(hwnd, _lparam):
-                if not user32.IsWindowVisible(hwnd):
-                    return True
-                length = user32.GetWindowTextLengthW(hwnd)
-                if length == 0:
-                    return True
-                buffer = ctypes.create_unicode_buffer(length + 1)
-                user32.GetWindowTextW(hwnd, buffer, length + 1)
-                # FL Studio's main window title contains "FL Studio"
-                if "FL Studio" in buffer.value:
-                    found["hwnd"] = hwnd
-                    return False  # stop enumerating
-                return True
-
-            user32.EnumWindows(EnumWindowsProc(_enum), 0)
-
-            hwnd = found["hwnd"]
-            if not hwnd:
-                return False
-
-            # Restore if minimized, then foreground it.
-            SW_RESTORE = 9
-            user32.ShowWindow(hwnd, SW_RESTORE)
-
-            # Windows normally forbids a background process from stealing focus.
-            # Tapping ALT unlocks SetForegroundWindow for this call.
-            VK_MENU = 0x12
-            KEYEVENTF_KEYUP = 0x0002
-            user32.keybd_event(VK_MENU, 0, 0, 0)
-            user32.SetForegroundWindow(hwnd)
-            user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
-
-            return True
+            return focus_fl_studio()
         except Exception:
             return False
+
+    def _focus_fl_studio_macos(self) -> bool:
+        """Bring FL Studio to the foreground on macOS using osascript."""
+        try:
+            done = subprocess.run(
+                ["osascript", "-e", 'tell application "FL Studio" to activate'],
+                capture_output=True,
+                timeout=5,
+            )
+            return done.returncode == 0
+        except Exception:
+            return False
+
+    def has_focus(self) -> bool:
+        """Whether FL Studio is the foreground window right now.
+
+        Only Windows can be asked; elsewhere this trusts the last focus() call.
+        """
+        if self._system != "Windows":
+            return True
+        try:
+            from fl_studio_mcp.utils.win_focus import fl_studio_is_focused
+
+            return fl_studio_is_focused()
+        except Exception:
+            return False
+
+    def focus(self) -> bool:
+        """Bring FL Studio to the foreground so keystrokes reach it.
+
+        Returns:
+            True if FL Studio was foregrounded, False if it wasn't found or the
+            platform isn't supported.
+        """
+        if self._system == "Windows":
+            return self._focus_fl_studio_windows()
+        if self._system == "Darwin":
+            return self._focus_fl_studio_macos()
+        return False
 
     def _trigger_windows(self) -> bool:
         """Trigger FL Studio on Windows using pynput.
@@ -189,7 +188,8 @@ class FLStudioTrigger:
         if self._trigger_func is None:
             return False
 
-        success = self._trigger_func()
+        with keyboard_lock:
+            success = self._trigger_func()
         if success and delay > 0:
             time.sleep(delay)
 

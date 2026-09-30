@@ -70,8 +70,9 @@ def test_get_all_patterns_lists_only_used_ones(controller, fl):
     assert result == {
         "current": 1,
         "patterns": [
-            {"index": 1, "name": "Intro", "length_beats": 16, "is_current": True},
-            {"index": 3, "name": "Drop", "length_beats": 32, "is_current": False},
+            # getPatternLength counts steps (seen live): 16 steps = 4 beats
+            {"index": 1, "name": "Intro", "length_beats": 4.0, "is_current": True},
+            {"index": 3, "name": "Drop", "length_beats": 8.0, "is_current": False},
         ],
     }
 
@@ -134,8 +135,31 @@ def test_project_info_summarizes_the_project(controller, fl):
     assert info["loop_mode"] == "pattern"
 
 
+@pytest.mark.parametrize(("action", "params"), [
+    ("channels.setGridBit", {"channel": 2, "position": 0, "value": True}),
+    ("channels.setStepSequence", {"channel": 2, "pattern": [True]}),
+    ("channels.setStepParams", {"channel": 2, "steps": [{"step": 0, "on": True}]}),
+])
+def test_a_step_that_is_already_on_is_not_switched_on_again(controller, fl, action, params):
+    # Seen live in FL 2026: setGridBit(1) on an active step adds a duplicate note.
+    fl["channels"].getGridBit.return_value = 1
+
+    controller.dispatch_command(action, params)
+
+    fl["channels"].setGridBit.assert_not_called()
+
+
+def test_set_grid_bit_switches_a_step_whose_state_differs(controller, fl):
+    fl["channels"].getGridBit.return_value = 0
+
+    controller.dispatch_command("channels.setGridBit", {"channel": 2, "position": 3, "value": True})
+
+    fl["channels"].setGridBit.assert_called_once_with(2, 3, 1, True)
+
+
 def test_set_step_params_writes_each_param_and_grid_bit(controller, fl):
     channels = fl["channels"]
+    channels.getGridBit.side_effect = lambda channel, step, use_global: int(step == 4)
 
     result = controller.dispatch_command("channels.setStepParams", {
         "channel": 2,
@@ -191,6 +215,24 @@ def test_get_step_params_reads_every_param_for_active_steps(controller, fl):
         "step": 1, "on": True, "pitch": 0, "velocity": 1, "release": 2, "fine_pitch": 3,
         "pan": 4, "mod_x": 5, "mod_y": 6, "shift": 7 - 24,
     }
+
+
+def test_get_step_params_in_another_pattern_selects_it_first(controller, fl):
+    fl["channels"].getGridBit.return_value = 0
+
+    result = controller.dispatch_command(
+        "channels.getStepParams", {"channel": 0, "steps": 1, "pattern": 3}
+    )
+
+    fl["patterns"].jumpToPattern.assert_called_once_with(3)
+    assert result["steps"] == [{"step": 0, "on": False}]
+
+
+def test_get_step_params_rejects_a_bad_pattern(controller, fl):
+    result = controller.dispatch_command("channels.getStepParams", {"channel": 0, "pattern": 0})
+
+    assert "error" in result
+    fl["channels"].getGridBit.assert_not_called()
 
 
 def test_step_shift_is_relative_to_the_step_position(controller, fl):
@@ -251,6 +293,28 @@ def test_show_in_piano_roll_rejects_bad_indexes(controller, fl_modules, index):
     assert "error" in result
     fl_modules["channels"].selectOneChannel.assert_not_called()
     fl_modules["ui"].hideWindow.assert_not_called()
+
+
+@pytest.mark.parametrize(("show", "value"), [(True, 1), (False, 0)])
+def test_show_editor_shows_or_hides_the_plugin_window(controller, fl_modules, show, value):
+    fl_modules["channels"].channelCount.return_value = 5
+    fl_modules["channels"].getChannelName.return_value = "Sampler"
+
+    result = controller.dispatch_command("channels.showEditor", {"index": 4, "show": show})
+
+    # showEditor(index, value, useGlobalIndex)
+    fl_modules["channels"].showEditor.assert_called_once_with(4, value, True)
+    assert result == {"shown": show, "channel_name": "Sampler"}
+
+
+@pytest.mark.parametrize("index", [-1, 5, "4", None, True])
+def test_show_editor_rejects_bad_indexes(controller, fl_modules, index):
+    fl_modules["channels"].channelCount.return_value = 5
+
+    result = controller.dispatch_command("channels.showEditor", {"index": index})
+
+    assert "error" in result
+    fl_modules["channels"].showEditor.assert_not_called()
 
 
 def test_reload_script_re_executes_the_installed_file(controller, tmp_path, monkeypatch):
