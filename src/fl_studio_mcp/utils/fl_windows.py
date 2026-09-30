@@ -26,6 +26,7 @@ RENDER_WINDOW_CLASS = "TWAVRenderForm"
 SYSTEM_DIALOG_CLASS = "#32770"
 PIANO_ROLL_TITLE = "Piano roll"
 PLAYLIST_TITLE = "Playlist"
+CHANNEL_RACK_TITLE = "Channel rack"
 EDITOR_PANEL_CLASS = "TEventEditForm"  # the piano roll's and the playlist's window
 # In the playlist: the box above the track headers, left of the time ruler.
 PLAYLIST_CORNER_CLASS = "TWPControl"
@@ -63,6 +64,8 @@ VK_DOWN = 0x28
 PLUGIN_WINDOW_CLASS = "TPluginForm"
 # FL's own message boxes ("... is not included in the edition you are testing", questions).
 MESSAGE_WINDOW_CLASS = "TMsgForm"
+MESSAGE_BUTTON_CLASS = "TQuickFocusBtn"  # its buttons, e.g. Ok and Cancel, left to right
+MESSAGE_BUTTON_OFFSET = (20, 12)  # a point inside a button
 # The settings window of a piano roll script that has one (the stock scripts do).
 SCRIPT_DIALOG_CLASS = "TScriptDialog"
 # Seen live: after an entry is chosen FL acts at once, but the menu's window fades
@@ -271,6 +274,25 @@ def close_messages() -> int:
     return len(messages)
 
 
+def click_message_button(position: int) -> bool:
+    """Click a button of FL's message box, counted from the left (-1 is the last one).
+
+    Seen live: the box ignores a posted Enter, but its buttons take a posted
+    click. False unless exactly one box is open and it has that button.
+    """
+    user32, kernel32 = win_focus._libraries()
+    messages = top_level_handles(user32, kernel32, MESSAGE_WINDOW_CLASS)
+    if len(messages) != 1:
+        return False
+    buttons = sorted(
+        _visible_children(user32, messages[0], MESSAGE_BUTTON_CLASS),
+        key=lambda hwnd: _rect(user32, hwnd)[0],
+    )
+    if not -len(buttons) <= position < len(buttons):
+        return False
+    return _post_click(user32, buttons[position], MESSAGE_BUTTON_OFFSET)
+
+
 def close_windows(class_name: str) -> None:
     """Ask FL's top-level windows of a class to close."""
     user32, kernel32 = win_focus._libraries()
@@ -360,6 +382,13 @@ def click_playlist_menu_arrow() -> bool:
     user32, kernel32 = win_focus._libraries()
     main = win_focus.find_fl_window(user32, kernel32)
     return main is not None and click_panel_menu_arrow(user32, main, PLAYLIST_TITLE)
+
+
+def click_channel_rack_menu_arrow() -> bool:
+    """Open the channel rack's menu. False if no channel rack is showing."""
+    user32, kernel32 = win_focus._libraries()
+    main = win_focus.find_fl_window(user32, kernel32)
+    return main is not None and click_panel_menu_arrow(user32, main, CHANNEL_RACK_TITLE)
 
 
 def popup_menu_count() -> int:

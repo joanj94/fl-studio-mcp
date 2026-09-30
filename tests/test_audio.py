@@ -250,7 +250,7 @@ def test_analyze_refuses_audio_too_long_to_hold_in_memory(monkeypatch):
 
 # --- render through FL's export dialog -------------------------------------
 
-UP, RIGHT, ENTER, HOME, END = 0x26, 0x27, 0x0D, 0x24, 0x23
+UP, RIGHT, DOWN, ENTER, HOME, END = 0x26, 0x27, 0x28, 0x0D, 0x24, 0x23
 DIALOG, RENDER_WINDOW = "#32770", "TWAVRenderForm"
 
 
@@ -347,7 +347,7 @@ def export(monkeypatch, tmp_path) -> FakeExport:
 
 
 def test_render_walks_the_export_dialogs_and_waits_for_the_file(export):
-    seconds = fl_render.render_wav(export.target, timeout=0.0)
+    seconds = fl_render.render_audio(export.target, timeout=0.0)
 
     # End is Exit; above it Revert, then Export. Right opens its submenu, whose first
     # entry (Home) is the wave file.
@@ -357,10 +357,25 @@ def test_render_walks_the_export_dialogs_and_waits_for_the_file(export):
     assert export.target.exists()
 
 
+def test_an_mp3_path_chooses_the_export_menus_second_entry(export, tmp_path):
+    export.target = tmp_path / "out.mp3"
+
+    fl_render.render_audio(export.target, timeout=0.0)
+
+    assert export.events[:8] == ["file menu", END, UP, UP, RIGHT, HOME, DOWN, ENTER]
+    assert export.target.exists()
+
+
+def test_render_rejects_a_format_it_cannot_choose(export, tmp_path):
+    with pytest.raises(fl_render.RenderError, match=r"\.wav or \.mp3"):
+        fl_render.render_audio(tmp_path / "out.flac", timeout=0.0)
+    assert export.events == []
+
+
 def test_a_minimized_fl_is_brought_back_before_rendering(export):
     export.minimized = True
 
-    fl_render.render_wav(export.target, timeout=0.0)
+    fl_render.render_audio(export.target, timeout=0.0)
 
     assert export.target.exists()
 
@@ -375,7 +390,7 @@ def test_render_does_not_start_while_fl_is_busy(export, window, reason):
         export.windows[window] = 1
 
     with pytest.raises(fl_render.RenderError, match=reason):
-        fl_render.render_wav(export.target, timeout=0.0)
+        fl_render.render_audio(export.target, timeout=0.0)
     assert "file menu" not in export.events
 
 
@@ -383,13 +398,13 @@ def test_render_refuses_to_overwrite_a_file(export):
     export.target.write_bytes(b"old")
 
     with pytest.raises(fl_render.RenderError, match="already exists"):
-        fl_render.render_wav(export.target, timeout=0.0)
+        fl_render.render_audio(export.target, timeout=0.0)
     assert export.events == []
 
 
 def test_render_needs_the_output_folder(export, tmp_path):
     with pytest.raises(fl_render.RenderError, match="does not exist"):
-        fl_render.render_wav(tmp_path / "missing" / "out.wav", timeout=0.0)
+        fl_render.render_audio(tmp_path / "missing" / "out.wav", timeout=0.0)
 
 
 @pytest.mark.parametrize(("setting", "reason"), [
@@ -402,7 +417,7 @@ def test_render_reports_the_step_that_failed_and_leaves_nothing_open(export, set
     setattr(export, setting, False)
 
     with pytest.raises(fl_render.RenderError, match=reason):
-        fl_render.render_wav(export.target, timeout=0.0)
+        fl_render.render_audio(export.target, timeout=0.0)
     assert export.menus == 0 and export.windows == {DIALOG: 0, RENDER_WINDOW: 0}
     if setting in ("opens_file_menu", "has_export_submenu"):
         assert ENTER not in export.events
@@ -412,7 +427,7 @@ def test_render_chooses_nothing_in_a_submenu_that_is_not_exports(export):
     export.submenu_top = 55  # seen live: where the submenus that open other projects are
 
     with pytest.raises(fl_render.RenderError, match="not where the File menu's Export"):
-        fl_render.render_wav(export.target, timeout=0.0)
+        fl_render.render_audio(export.target, timeout=0.0)
     assert ENTER not in export.events and export.menus == 0
 
 
@@ -420,7 +435,7 @@ def test_render_does_not_start_while_fl_shows_a_message_box(export):
     export.message = "FL Studio trial"
 
     with pytest.raises(fl_render.RenderError, match="'FL Studio trial'.*fl_close_message"):
-        fl_render.render_wav(export.target, timeout=0.0)
+        fl_render.render_audio(export.target, timeout=0.0)
     assert "file menu" not in export.events
 
 
@@ -428,7 +443,7 @@ def test_render_chooses_nothing_while_the_pointer_is_over_the_menu(export):
     export.pointer_on_menu = True
 
     with pytest.raises(fl_render.RenderError, match="pointer is over"):
-        fl_render.render_wav(export.target, timeout=0.0)
+        fl_render.render_audio(export.target, timeout=0.0)
     assert ENTER not in export.events and export.menus == 0
 
 
@@ -436,7 +451,7 @@ def test_a_render_that_is_only_slow_is_left_running(export):
     export.finishes = False
 
     with pytest.raises(fl_render.RenderError, match="did not finish"):
-        fl_render.render_wav(export.target, timeout=0.0)
+        fl_render.render_audio(export.target, timeout=0.0)
     assert export.windows[RENDER_WINDOW] == 1
     assert f"close {RENDER_WINDOW}" not in export.events
 
@@ -445,14 +460,14 @@ def test_render_reports_a_file_that_was_not_written(export):
     export.writes_file = False
 
     with pytest.raises(fl_render.RenderError, match="was not written"):
-        fl_render.render_wav(export.target, timeout=0.0)
+        fl_render.render_audio(export.target, timeout=0.0)
 
 
 def test_render_is_windows_only(export, monkeypatch):
     monkeypatch.setattr(fl_render.platform, "system", lambda: "Darwin")
 
     with pytest.raises(fl_render.RenderError, match="only supported on Windows"):
-        fl_render.render_wav(export.target, timeout=0.0)
+        fl_render.render_audio(export.target, timeout=0.0)
 
 
 def test_render_reports_a_failure_to_reach_fls_windows(export, monkeypatch):
@@ -462,7 +477,7 @@ def test_render_reports_a_failure_to_reach_fls_windows(export, monkeypatch):
     monkeypatch.setattr(fl_render.fl_windows, "click_main_menu", broken)
 
     with pytest.raises(fl_render.RenderError, match="no desktop"):
-        fl_render.render_wav(export.target, timeout=0.0)
+        fl_render.render_audio(export.target, timeout=0.0)
 
 
 def test_a_failure_halfway_the_export_leaves_nothing_open(export, monkeypatch):
@@ -472,7 +487,7 @@ def test_a_failure_halfway_the_export_leaves_nothing_open(export, monkeypatch):
     monkeypatch.setattr(fl_render.fl_windows, "confirm_dialog_with_file_name", broken)
 
     with pytest.raises(fl_render.RenderError, match="no desktop"):
-        fl_render.render_wav(export.target, timeout=0.0)
+        fl_render.render_audio(export.target, timeout=0.0)
     assert export.menus == 0 and export.windows == {DIALOG: 0, RENDER_WINDOW: 0}
 
 
@@ -497,7 +512,7 @@ def _fl_renders(monkeypatch, samples: np.ndarray) -> list[Path]:
         rendered.append(path)
         return 1.234
 
-    monkeypatch.setattr(audio_tools, "render_wav", render)
+    monkeypatch.setattr(audio_tools, "render_audio", render)
     return rendered
 
 
@@ -525,21 +540,31 @@ def test_render_tool_never_reuses_a_file_name(tools, monkeypatch):
     assert "analysis" not in result
 
 
-def test_render_tool_takes_a_path_but_only_wav(tools, monkeypatch, tmp_path):
+def test_render_tool_takes_a_path_but_only_wav_or_mp3(tools, monkeypatch, tmp_path):
     rendered = _fl_renders(monkeypatch, stereo(sine(440, 0.1)))
 
-    assert "must end in .wav" in tools["fl_render"](path=str(tmp_path / "song.mp3"))["error"]
+    error = tools["fl_render"](path=str(tmp_path / "song.flac"))["error"]
+    assert "must end in .wav or .mp3" in error
     assert rendered == []
 
     tools["fl_render"](path=str(tmp_path / "song.wav"), analyze=False)
     assert rendered == [tmp_path / "song.wav"]
 
 
+def test_render_tool_does_not_measure_an_mp3(tools, monkeypatch, tmp_path):
+    rendered = _fl_renders(monkeypatch, stereo(sine(440, 0.1)))
+
+    result = tools["fl_render"](path=str(tmp_path / "song.mp3"))
+
+    assert rendered == [tmp_path / "song.mp3"]
+    assert "analysis" not in result and "error" not in result
+
+
 def test_render_tool_reports_a_failed_render(tools, monkeypatch):
     def fails(path: Path, timeout: float) -> float:
         raise fl_render.RenderError("a dialog is open")
 
-    monkeypatch.setattr(audio_tools, "render_wav", fails)
+    monkeypatch.setattr(audio_tools, "render_audio", fails)
 
     assert tools["fl_render"]() == {"error": "a dialog is open"}
 
@@ -600,7 +625,7 @@ def _each_stem_sounds(monkeypatch, rack: Rack, levels: dict[int, float | None]) 
         rendered.append(path)
         return 0.5
 
-    monkeypatch.setattr(audio_tools, "render_wav", render)
+    monkeypatch.setattr(audio_tools, "render_audio", render)
     return rendered
 
 
@@ -634,7 +659,7 @@ def test_stems_can_be_rendered_without_the_masters_effects(tools, rack, monkeypa
         write_wav(path, stereo(sine(440, 1.0, -6)), RATE, 1, 16)
         return 0.5
 
-    monkeypatch.setattr(audio_tools, "render_wav", render)
+    monkeypatch.setattr(audio_tools, "render_audio", render)
 
     assert "warning" not in tools["fl_render_stems"](master_effects=False)
     assert during == [{0: False, 3: False, 9: False}] * 2
@@ -645,7 +670,7 @@ def test_the_masters_effects_come_back_after_a_failed_render(tools, rack, monkey
     def render(path: Path, timeout: float) -> float:
         raise audio_tools.RenderError("FL Studio is showing a dialog")
 
-    monkeypatch.setattr(audio_tools, "render_wav", render)
+    monkeypatch.setattr(audio_tools, "render_audio", render)
 
     assert "error" in tools["fl_render_stems"](master_effects=False)
     assert rack.master_effects == {0: False, 3: True, 9: True}
@@ -684,7 +709,7 @@ def test_a_mono_stem_has_no_stereo_correlation(tools, rack, monkeypatch):
         write_wav(path, sine(440, 1.0, -6).reshape(-1, 1), RATE, 1, 16)
         return 0.5
 
-    monkeypatch.setattr(audio_tools, "render_wav", render)
+    monkeypatch.setattr(audio_tools, "render_audio", render)
 
     stem = tools["fl_render_stems"](channels=[0])["stems"][0]
 
@@ -695,7 +720,7 @@ def test_a_failed_stem_render_takes_the_solo_off_again(tools, rack, monkeypatch)
     def fails(path: Path, timeout: float) -> float:
         raise fl_render.RenderError("a dialog is open")
 
-    monkeypatch.setattr(audio_tools, "render_wav", fails)
+    monkeypatch.setattr(audio_tools, "render_audio", fails)
 
     assert tools["fl_render_stems"]() == {"error": "a dialog is open"}
     assert rack.soloed is None and rack.muted == {1}

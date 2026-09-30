@@ -27,6 +27,8 @@ POLL_INTERVAL = 0.05
 # confirms the walk. "Wave file..." is the Export submenu's first entry (Home).
 # Home and End work from wherever the highlight is: the mouse pointer moves it.
 UPS_FROM_EXIT_TO_EXPORT = 2
+# The Export submenu starts with "Wave file...", "MP3 file...": entries down from the first.
+EXPORT_ENTRIES = {".wav": 0, ".mp3": 1}
 RESTORE_DELAY = 0.5  # seconds FL gets to draw its window after being un-minimized
 
 
@@ -81,8 +83,8 @@ def _submenu_opened_low() -> bool:
     return submenu_top > (top + bottom) / 2
 
 
-def _open_save_dialog() -> None:
-    """File > Export > Wave file: leaves FL's Save dialog open."""
+def _open_save_dialog(entry: int) -> None:
+    """File > Export > the entry that many below the first: leaves FL's Save dialog open."""
     if not fl_windows.click_main_menu() or not _wait_for_menus(1):
         raise RenderError("FL Studio's File menu did not open")
     for key in [fl_windows.VK_END] + [fl_windows.VK_UP] * UPS_FROM_EXIT_TO_EXPORT:
@@ -95,8 +97,9 @@ def _open_save_dialog() -> None:
             "The submenu that opened is not where the File menu's Export entry is, so nothing "
             "was chosen in it"
         )
-    if not fl_windows.press_in_popup_menu(fl_windows.VK_HOME, menus=2):
-        raise RenderError("FL Studio's Export menu closed unexpectedly")
+    for key in [fl_windows.VK_HOME] + [fl_windows.VK_DOWN] * entry:
+        if not fl_windows.press_in_popup_menu(key, menus=2):
+            raise RenderError("FL Studio's Export menu closed unexpectedly")
     if fl_windows.pointer_over_menu():
         raise RenderError(
             "The mouse pointer is over FL Studio's menu, where it moves the highlight, so "
@@ -115,14 +118,18 @@ def _clean_up() -> None:
     fl_windows.close_windows(fl_windows.RENDER_WINDOW_CLASS)
 
 
-def render_wav(path: Path, timeout: float) -> float:
+def render_audio(path: Path, timeout: float) -> float:
     """Render what FL would play (pattern or song, per its mode) to `path`.
 
-    `path` must not exist yet, so FL never asks to overwrite. Returns the
-    seconds the render took. Raises RenderError with the reason otherwise.
+    The file's suffix picks the format (.wav or .mp3). `path` must not exist
+    yet, so FL never asks to overwrite. Returns the seconds the render took.
+    Raises RenderError with the reason otherwise.
     """
     if platform.system() != "Windows":
         raise RenderError("Rendering is only supported on Windows")
+    entry = EXPORT_ENTRIES.get(path.suffix.lower())
+    if entry is None:
+        raise RenderError(f"The render path must end in .wav or .mp3, got {path.name!r}")
     if path.exists():
         raise RenderError(f"{path} already exists; pick another file name")
     if not path.parent.is_dir():
@@ -137,7 +144,7 @@ def render_wav(path: Path, timeout: float) -> float:
             if busy:
                 raise RenderError(f"Cannot start a render while {busy}")
             try:
-                _open_save_dialog()
+                _open_save_dialog(entry)
                 # The dialog's window shows up before its file name box does.
                 if not _wait_until(
                     lambda: fl_windows.confirm_dialog_with_file_name(str(path)), WINDOW_TIMEOUT

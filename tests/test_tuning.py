@@ -86,7 +86,7 @@ def _channel_sounds(monkeypatch, project: Project, sound) -> list[Path]:
         rendered.append(path)
         return 0.5
 
-    monkeypatch.setattr(audio_tools, "render_wav", render)
+    monkeypatch.setattr(audio_tools, "render_audio", render)
     return rendered
 
 
@@ -194,7 +194,7 @@ def test_a_failed_render_still_cleans_up(tools, project, monkeypatch):
     def render(path: Path, timeout: float) -> float:
         raise audio_tools.RenderError("FL Studio is showing a dialog")
 
-    monkeypatch.setattr(audio_tools, "render_wav", render)
+    monkeypatch.setattr(audio_tools, "render_audio", render)
 
     result = tools["fl_measure_pitch"](1)
 

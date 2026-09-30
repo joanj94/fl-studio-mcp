@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fl_studio_mcp.utils.connection import call
-from fl_studio_mcp.utils.fl_render import RenderError, render_wav
+from fl_studio_mcp.utils.fl_render import EXPORT_ENTRIES, RenderError, render_audio
 from fl_studio_mcp.utils.fl_trigger import keyboard_lock
 from fl_studio_mcp.utils.roles import resolve_channel
 
@@ -144,7 +144,7 @@ def render_stems(
             soloed = channel["index"]
             _fl("channels.solo", {"index": soloed, "solo": True})
             path = _new_render_path(f"stem-{soloed}")
-            render_wav(path, timeout)
+            render_audio(path, timeout)
             summary = _stem_summary(analyze_file(path, DEFAULT_WINDOW_SECONDS))
             if keep_files:
                 summary["path"] = str(path)
@@ -190,7 +190,7 @@ def register_audio_tools(mcp: FastMCP) -> None:
         analyze: bool = True,
         timeout: float = DEFAULT_RENDER_TIMEOUT,
     ) -> dict:
-        """Render the project to a WAV file and (by default) measure it.
+        """Render the project to a WAV or MP3 file and (a WAV, by default) measure it.
 
         Renders what FL Studio would play: the active pattern in pattern mode,
         the playlist in song mode (see fl_set_loop_mode). It works through FL's
@@ -198,24 +198,28 @@ def register_audio_tools(mcp: FastMCP) -> None:
         must not be showing a dialog. The dialog's last-used quality settings
         apply. Windows only.
 
+        Render a .wav to measure the mix, and an .mp3 for the song to keep or
+        share (about a tenth of the size): an MP3 can't be measured here.
+
         Args:
-            path: Where to write the .wav; it must not exist yet. Default: a new
-                file in the render folder.
-            analyze: Also return the measurements audio_analyze gives.
+            path: Where to write the .wav or .mp3; it must not exist yet.
+                Default: a new .wav in the render folder.
+            analyze: Also return the measurements audio_analyze gives (WAV only).
             timeout: Seconds to wait for the render to finish.
 
         Returns {"path", "mode", "render_seconds", "analysis"?} or {"error": ...}.
         """
         target = Path(path) if path else _new_render_path()
-        if target.suffix.lower() != ".wav":
-            return {"error": f"The render path must end in .wav, got {target.name!r}"}
+        suffix = target.suffix.lower()
+        if suffix not in EXPORT_ENTRIES:
+            return {"error": f"The render path must end in .wav or .mp3, got {target.name!r}"}
         mode = call("transport.getStatus").get("loop_mode")
         try:
-            seconds = render_wav(target.resolve(), timeout)
+            seconds = render_audio(target.resolve(), timeout)
         except RenderError as e:
             return {"error": str(e)}
         result = {"path": str(target.resolve()), "mode": mode, "render_seconds": round(seconds, 1)}
-        if analyze:
+        if analyze and suffix == ".wav":
             result["analysis"] = analyze_file(target, DEFAULT_WINDOW_SECONDS)
         return result
 
