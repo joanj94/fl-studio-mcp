@@ -74,12 +74,12 @@ def register_mixer_tools(mcp: FastMCP) -> None:
 
         Args:
             track: Mixer track index (0 = Master)
-            volume: Volume level from 0.0 (silence) to 1.0 (0dB).
-                   Default FL Studio volume is 0.8 (~-5.2dB).
-                   Values above 1.0 may cause clipping.
+            volume: Fader position from 0.0 (silence) to 1.0 (+5.6 dB). FL's
+                   default, 0.8, is 0 dB; 0.5 is about -9 dB. To set a level
+                   in dB use fl_set_track_volume_db.
         """
-        if not 0.0 <= volume <= 1.25:
-            return "Error: Volume should be between 0.0 and 1.25"
+        if not 0.0 <= volume <= 1.0:
+            return "Error: Volume should be between 0.0 and 1.0"
 
         conn = get_connection()
         result = conn.send_command("mixer.setTrackVolume", {
@@ -93,6 +93,27 @@ def register_mixer_tools(mcp: FastMCP) -> None:
         new_vol = result.get("volume", 0)
         new_vol_db = result.get("volume_db", 0)
         return f"Track {track} volume set to {new_vol:.3f} ({new_vol_db:.1f} dB)"
+
+    @mcp.tool()
+    def fl_set_track_volume_db(track: int, db: float) -> dict:
+        """Set a mixer track's level in dB (0 is FL's default, unity gain).
+
+        The way to balance a mix from fl_render_stems: a part that is 6 LU too
+        loud comes down by 6 dB.
+
+        Args:
+            track: Mixer track index (0 = Master)
+            db: Level from -80 to +5.6 dB.
+
+        Returns {"track", "volume" (fader position 0-1), "volume_db"} or {"error"}.
+        """
+        result = get_connection().send_command("mixer.setTrackVolumeDb", {
+            "track": track,
+            "db": db,
+        })
+        if not result.get("success", False) and "error" in result:
+            return {"error": result["error"]}
+        return {key: result.get(key) for key in ("track", "volume", "volume_db")}
 
     @mcp.tool()
     def fl_set_track_pan(track: int, pan: float) -> str:

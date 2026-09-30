@@ -114,9 +114,11 @@ def _libraries() -> tuple[Any, Any]:
     kernel32 = ctypes.windll.kernel32
     # Handles are pointer-sized; ctypes would truncate them to int otherwise.
     user32.GetForegroundWindow.restype = ctypes.c_void_p
-    user32.WindowFromPoint.restype = ctypes.c_void_p
-    user32.GetParent.restype = ctypes.c_void_p
     kernel32.OpenProcess.restype = ctypes.c_void_p
+    user32.SendMessageTimeoutW.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_wchar_p,
+        ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p,
+    ]
     kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
     kernel32.QueryFullProcessImageNameW.argtypes = [
         ctypes.c_void_p, ctypes.c_ulong, ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_ulong),

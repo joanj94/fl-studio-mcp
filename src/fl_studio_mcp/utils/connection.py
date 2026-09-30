@@ -15,12 +15,30 @@ from __future__ import annotations
 
 from typing import Any
 
+from fl_studio_mcp.utils import fl_windows
 from fl_studio_mcp.utils.midi_connection import (
     get_connection as get_midi_connection,
 )
 from fl_studio_mcp.utils.midi_connection import (
     reset_connection as reset_midi_connection,
 )
+
+# Commands that only read: FL still answers those while it shows a message box.
+READ_VERBS = ("get", "is", "list", "find")
+
+
+def blocked_by_message(action: str) -> str | None:
+    """Why a command that changes something can't run right now, or None."""
+    verb = action.rpartition(".")[2]
+    if verb.startswith(READ_VERBS):
+        return None
+    title = fl_windows.open_message()
+    if title is None:
+        return None
+    return (
+        f"FL Studio is showing a message box ({title!r}) and ignores changes until it is "
+        "closed. Close it with fl_close_message (as its X button would), then try again."
+    )
 
 
 class FLConnection:
@@ -66,6 +84,9 @@ class FLConnection:
         Raises:
             RuntimeError: If not connected or command fails
         """
+        blocked = blocked_by_message(action)
+        if blocked:
+            return {"success": False, "error": blocked}
         return self._midi.send_command(action, params, timeout)
 
     def get_status(self) -> dict[str, Any]:

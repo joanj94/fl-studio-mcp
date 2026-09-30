@@ -1,7 +1,8 @@
 """Rendering the project to audio and measuring the result.
 
 `fl_render` drives FL Studio's export dialog (`utils/fl_render.py`);
-`audio_analyze` measures any WAV file and doesn't touch FL.
+`fl_render_stems` does it once per channel, soloed, to show what each part
+contributes; `audio_analyze` measures any WAV file and doesn't touch FL.
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ from typing import TYPE_CHECKING
 
 from fl_studio_mcp.utils.connection import call
 from fl_studio_mcp.utils.fl_render import RenderError, render_wav
+from fl_studio_mcp.utils.fl_trigger import keyboard_lock
+from fl_studio_mcp.utils.roles import resolve_channel
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -35,12 +38,12 @@ def get_render_dir() -> Path:
     return folder
 
 
-def _new_render_path() -> Path:
+def _new_render_path(prefix: str = "render") -> Path:
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    path = get_render_dir() / f"render-{stamp}.wav"
+    path = get_render_dir() / f"{prefix}-{stamp}.wav"
     number = 2
     while path.exists():
-        path = get_render_dir() / f"render-{stamp}-{number}.wav"
+        path = get_render_dir() / f"{prefix}-{stamp}-{number}.wav"
         number += 1
     return path
 
@@ -63,6 +66,99 @@ def analyze_file(path: Path, window_seconds: float) -> dict:
         return {"error": f"Could not analyse {path}: not enough memory for a file this long"}
 
 
+# Below this peak a stem counts as silent: the channel plays nothing in what was rendered.
+SILENT_PEAK_DBFS = -90.0
+
+
+def _stem_summary(analysis: dict) -> dict:
+    """The few numbers that tell what one channel adds to the mix."""
+    if "error" in analysis:
+        return {"error": analysis["error"]}
+    if analysis["peak_dbfs"] <= SILENT_PEAK_DBFS:
+        return {"silent": True}
+    return {
+        "silent": False,
+        "loudness_lufs": analysis["loudness_lufs"],
+        "peak_dbfs": analysis["peak_dbfs"],
+        "clipped_samples": analysis["clipped_samples"],
+        "frequency_percent": {
+            band: values["percent"] for band, values in analysis["frequency_balance"].items()
+        },
+        "stereo_correlation": (analysis.get("stereo") or {}).get("correlation"),  # None: mono
+        "key": analysis["key"],
+        "pitch": analysis["pitch"],
+    }
+
+
+def _fl(action: str, params: dict | None = None) -> dict:
+    """A controller command; raises RenderError if FL can't run it."""
+    try:
+        result = call(action, params)
+    except RuntimeError as e:
+        raise RenderError(str(e)) from e
+    if "error" in result:
+        raise RenderError(result["error"])
+    return result
+
+
+def render_stems(indexes: list[int] | None, timeout: float, keep_files: bool) -> dict:
+    """Render each channel soloed and summarise it; raises RenderError.
+
+    Soloing a channel and taking the solo off again leaves every channel
+    unmuted, so the channels that were muted are muted again afterwards. A solo
+    that was on comes back that way too: seen live, FL reports a solo as every
+    other channel muted, and muting every other channel reads as a solo.
+    """
+    rack = _fl("channels.getAll").get("channels", [])
+    missing = [i for i in indexes or [] if i >= len(rack)]
+    if missing:
+        raise RenderError(
+            f"There is no channel {missing[0]}: the rack has channels 0-{len(rack) - 1}"
+        )
+    wanted = [c for c in rack if not c.get("is_muted")] if indexes is None else [
+        rack[i] for i in indexes
+    ]
+    muted = [c["index"] for c in rack if c.get("is_muted")]
+    stems: list[dict] = []
+    soloed: int | None = None
+    try:
+        for channel in wanted:
+            soloed = channel["index"]
+            _fl("channels.solo", {"index": soloed, "solo": True})
+            path = _new_render_path(f"stem-{soloed}")
+            render_wav(path, timeout)
+            summary = _stem_summary(analyze_file(path, DEFAULT_WINDOW_SECONDS))
+            if keep_files:
+                summary["path"] = str(path)
+            else:
+                path.unlink(missing_ok=True)
+            stems.append({"index": soloed, "name": channel.get("name"), **summary})
+            _fl("channels.solo", {"index": soloed, "solo": False})
+            soloed = None
+    finally:
+        problems = []
+        if soloed is not None:
+            problems.append(_put_back("channels.solo", {"index": soloed, "solo": False}))
+        problems.extend(
+            _put_back("channels.mute", {"index": index, "muted": True}) for index in muted
+        )
+    result: dict = {"stems": stems}
+    if any(problems):
+        result["warning"] = (
+            "The channels' mute and solo states could not all be put back: "
+            + "; ".join(problem for problem in problems if problem)
+        )
+    return result
+
+
+def _put_back(action: str, params: dict) -> str | None:
+    """Restore a changed state; returns what went wrong instead of raising."""
+    try:
+        return call(action, params).get("error")
+    except RuntimeError as e:
+        return str(e)
+
+
 def register_audio_tools(mcp: FastMCP) -> None:
     """Register render and analysis tools with the MCP server."""
 
@@ -76,9 +172,9 @@ def register_audio_tools(mcp: FastMCP) -> None:
 
         Renders what FL Studio would play: the active pattern in pattern mode,
         the playlist in song mode (see fl_set_loop_mode). It works through FL's
-        export dialog by keystrokes, so FL comes to the front and must not be
-        showing a dialog; the dialog's last-used quality settings apply.
-        Windows only.
+        own export dialog, which flashes up while FL stays in the background; FL
+        must not be showing a dialog. The dialog's last-used quality settings
+        apply. Windows only.
 
         Args:
             path: Where to write the .wav; it must not exist yet. Default: a new
@@ -102,6 +198,47 @@ def register_audio_tools(mcp: FastMCP) -> None:
         return result
 
     @mcp.tool()
+    def fl_render_stems(
+        channels: list[int | str] | None = None,
+        keep_files: bool = False,
+        timeout: float = DEFAULT_RENDER_TIMEOUT,
+    ) -> dict:
+        """Render each channel on its own and measure it, to see what every part adds to the mix.
+
+        Each channel is soloed and rendered like fl_render (pattern or song, per
+        FL's mode), so it is heard through its mixer track and the master's
+        effects. Use it to balance levels: compare the stems' loudness and
+        where their energy sits, change channel or mixer volumes, and render
+        again. Takes about as long as one fl_render per channel. Windows only.
+
+        Args:
+            channels: Channel indexes or roles to render. Default: every channel
+                that isn't muted.
+            keep_files: Keep the stem WAVs and return their paths.
+            timeout: Seconds to wait for each render.
+
+        Returns {"mode", "stems": [{"index", "name", "silent", "loudness_lufs",
+        "peak_dbfs", "clipped_samples", "frequency_percent": {band: percent},
+        "stereo_correlation", "key", "pitch"}]} or {"error": ...}. A silent stem
+        (the channel plays nothing in what was rendered) has only "silent": true.
+        "pitch" is the note the stem plays most ({"note", "cents", "share",
+        "notes"}, null for unpitched sounds). A part whose key or notes differ
+        from what you wrote is tuned away from the notes it is given:
+        fl_measure_pitch tells by how much.
+        """
+        try:
+            indexes = None if channels is None else [resolve_channel(c) for c in channels]
+        except ValueError as e:
+            return {"error": str(e)}
+        try:
+            with keyboard_lock:
+                mode = _fl("transport.getStatus").get("loop_mode")
+                result = render_stems(indexes, timeout, keep_files)
+        except RenderError as e:
+            return {"error": str(e)}
+        return {"mode": mode, **result}
+
+    @mcp.tool()
     def audio_analyze(path: str, window_seconds: float = DEFAULT_WINDOW_SECONDS) -> dict:
         """Measure a WAV file: loudness, peaks, frequency balance, stereo image and key.
 
@@ -116,6 +253,10 @@ def register_audio_tools(mcp: FastMCP) -> None:
             stereo: left/right correlation (1 mono, 0 wide, below 0 phase problems)
                 and side_to_mid_db (higher = wider)
             key: estimated key with a confidence and the runner-up
+            pitch: the note played most of the time ({"note", "midi", "hz", "cents"
+                off that note, "share" of the pitched time, "voiced" share of the
+                sound that has a pitch, "notes"}); null for unpitched sounds.
+                Meant for single sounds and single parts, not for a full mix.
             loudness_over_time: loudness of consecutive windows, to see sections
 
         Args:

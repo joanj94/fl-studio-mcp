@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import struct
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -249,87 +248,135 @@ def test_analyze_refuses_audio_too_long_to_hold_in_memory(monkeypatch):
         analysis.analyze(np.zeros((2 * RATE, 2)), RATE)
 
 
-# --- render keystrokes -----------------------------------------------------
+# --- render through FL's export dialog -------------------------------------
+
+UP, RIGHT, ENTER, HOME, END = 0x26, 0x27, 0x0D, 0x24, 0x23
+DIALOG, RENDER_WINDOW = "#32770", "TWAVRenderForm"
 
 
 class FakeExport:
-    """FL's export flow: Ctrl+R opens the save dialog, Enter the render window, Enter renders."""
+    """FL's export flow: File > Export > Wave file, the Save dialog, the render window."""
 
     def __init__(self, target: Path) -> None:
         self.target = target
-        self.events: list[str] = []
-        self.windows = {"#32770": 0, "TWAVRenderForm": 0, "menus": 0}
+        self.events: list = []
+        self.windows = {DIALOG: 0, RENDER_WINDOW: 0}
+        self.menus = 0
+        self.minimized = False
+        self.opens_file_menu = True
+        self.has_export_submenu = True
         self.opens_dialog = True
         self.opens_render_window = True
         self.finishes = True
         self.writes_file = True
-        self.accepts_path = True  # False: Enter leaves the save dialog open
-        self.held: list[str] = []
+        self.pointer_on_menu = False
+        self.message: str | None = None
+        self.submenu_top = 259  # seen live: the File menu spans 36-334, Export opens at 259
 
-    def pressed(self, key: str):
-        fake = self
+    def open_message(self) -> str | None:
+        return self.message
 
-        class Held:
-            def __enter__(self) -> None:
-                fake.held.append(key)
+    def popup_menu_rects(self) -> list:
+        menus = [(4, 36, 216, 334), (214, self.submenu_top, 393, self.submenu_top + 358)]
+        return menus[:self.menus]
 
-            def __exit__(self, *exc: object) -> None:
-                fake.held.remove(key)
+    def pointer_over_menu(self) -> bool:
+        return self.pointer_on_menu
 
-        return Held()
+    def restore_if_minimized(self) -> bool:
+        was_minimized, self.minimized = self.minimized, False
+        return was_minimized
 
-    def tap(self, key: str) -> None:
-        self.events.append("+".join([*self.held, key]))
-        if self.held == ["ctrl"] and key == "r":
-            self.windows["#32770"] = int(self.opens_dialog)
-        elif key == "esc":
-            self.windows["#32770"] = self.windows["TWAVRenderForm"] = 0
-        elif key == "enter" and self.windows["#32770"] and not self.accepts_path:
-            self.events[-1] = "enter (refused)"
-        elif key == "enter" and self.windows["#32770"]:
-            self.windows["#32770"] = 0
-            self.windows["TWAVRenderForm"] = int(self.opens_render_window)
-        elif key == "enter" and self.windows["TWAVRenderForm"] and self.finishes:
-            self.windows["TWAVRenderForm"] = 0
+    def click_main_menu(self) -> bool:
+        self.events.append("file menu")
+        self.menus = int(self.opens_file_menu and not self.minimized)
+        return True
+
+    def press_in_popup_menu(self, key: int, menus: int = 1) -> bool:
+        if self.menus != menus:
+            return False
+        self.events.append(key)
+        if key == RIGHT and self.has_export_submenu:
+            self.menus = 2
+        elif key == ENTER:
+            self.menus = 0
+            self.windows[DIALOG] = int(self.opens_dialog)
+        return True
+
+    def confirm_dialog_with_file_name(self, name: str) -> bool:
+        self.events.append(f"save as {name}")
+        if self.opens_render_window:
+            self.windows[DIALOG] = 0
+            self.windows[RENDER_WINDOW] = 1
+        return True
+
+    def press_in_window(self, class_name: str, key: int) -> bool:
+        self.events.append(f"{class_name} {key}")
+        if self.finishes:
+            self.windows[RENDER_WINDOW] = 0
             if self.writes_file:
                 self.target.write_bytes(b"RIFF")
+        return True
 
-    def type(self, text: str) -> None:
-        self.events.append(f"type {text}")
+    def close_popup_menus(self) -> None:
+        self.menus = 0
+
+    def cancel_dialogs(self) -> None:
+        self.windows[DIALOG] = 0
+
+    def close_windows(self, class_name: str) -> None:
+        self.events.append(f"close {class_name}")
+        self.windows[class_name] = 0
 
 
 @pytest.fixture
 def export(monkeypatch, tmp_path) -> FakeExport:
     fake = FakeExport(tmp_path / "out.wav")
-    keys = SimpleNamespace(ctrl="ctrl", enter="enter", esc="esc")
-    trigger = SimpleNamespace(focus=lambda: True, has_focus=lambda: True)
+    windows = fl_render.fl_windows
     monkeypatch.setattr(fl_render.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(fl_render, "_keyboard", lambda: (fake, keys))
-    monkeypatch.setattr(fl_render, "get_trigger", lambda: trigger)
     monkeypatch.setattr(fl_render, "WINDOW_TIMEOUT", 0.0)
     monkeypatch.setattr(fl_render.time, "sleep", lambda seconds: None)
-    monkeypatch.setattr(fl_render.fl_windows, "window_count", lambda cls: fake.windows[cls])
-    monkeypatch.setattr(fl_render.fl_windows, "popup_menu_count", lambda: fake.windows["menus"])
+    monkeypatch.setattr(windows, "window_count", lambda cls: fake.windows[cls])
+    monkeypatch.setattr(windows, "popup_menu_count", lambda: fake.menus)
+    for name in ("restore_if_minimized", "click_main_menu", "pointer_over_menu",
+                 "open_message", "popup_menu_rects",
+                 "press_in_popup_menu", "confirm_dialog_with_file_name", "press_in_window",
+                 "close_popup_menus", "cancel_dialogs", "close_windows"):
+        monkeypatch.setattr(windows, name, getattr(fake, name))
     return fake
 
 
 def test_render_walks_the_export_dialogs_and_waits_for_the_file(export):
     seconds = fl_render.render_wav(export.target, timeout=0.0)
 
-    assert export.events == ["ctrl+r", f"type {export.target}", "enter", "enter"]
+    # End is Exit; above it Revert, then Export. Right opens its submenu, whose first
+    # entry (Home) is the wave file.
+    assert export.events == ["file menu", END, UP, UP, RIGHT, HOME, ENTER,
+                             f"save as {export.target}", f"{RENDER_WINDOW} {ENTER}"]
     assert seconds >= 0
     assert export.target.exists()
 
 
+def test_a_minimized_fl_is_brought_back_before_rendering(export):
+    export.minimized = True
+
+    fl_render.render_wav(export.target, timeout=0.0)
+
+    assert export.target.exists()
+
+
 @pytest.mark.parametrize(("window", "reason"), [
-    ("menus", "a menu is open"), ("#32770", "a dialog is open"), ("TWAVRenderForm", "already open"),
+    ("menus", "a menu is open"), (DIALOG, "a dialog is open"), (RENDER_WINDOW, "already open"),
 ])
 def test_render_does_not_start_while_fl_is_busy(export, window, reason):
-    export.windows[window] = 1
+    if window == "menus":
+        export.menus = 1
+    else:
+        export.windows[window] = 1
 
     with pytest.raises(fl_render.RenderError, match=reason):
         fl_render.render_wav(export.target, timeout=0.0)
-    assert export.events == []
+    assert "file menu" not in export.events
 
 
 def test_render_refuses_to_overwrite_a_file(export):
@@ -345,57 +392,88 @@ def test_render_needs_the_output_folder(export, tmp_path):
         fl_render.render_wav(tmp_path / "missing" / "out.wav", timeout=0.0)
 
 
-@pytest.mark.parametrize(("setting", "reason", "events"), [
-    ("opens_dialog", "export dialog did not open", 1),
-    ("opens_render_window", "render window did not open", 3),
-    ("finishes", "did not finish", 4),
-    ("writes_file", "was not written", 4),
+@pytest.mark.parametrize(("setting", "reason"), [
+    ("opens_file_menu", "File menu did not open"),
+    ("has_export_submenu", "Export submenu was not where it was expected"),
+    ("opens_dialog", "export dialog did not open"),
+    ("opens_render_window", "render window did not open"),
 ])
-def test_render_reports_the_step_that_failed(export, setting, reason, events):
+def test_render_reports_the_step_that_failed_and_leaves_nothing_open(export, setting, reason):
     setattr(export, setting, False)
 
     with pytest.raises(fl_render.RenderError, match=reason):
         fl_render.render_wav(export.target, timeout=0.0)
-    assert len(export.events) == events
+    assert export.menus == 0 and export.windows == {DIALOG: 0, RENDER_WINDOW: 0}
+    if setting in ("opens_file_menu", "has_export_submenu"):
+        assert ENTER not in export.events
 
 
-def test_render_closes_the_save_dialog_when_fl_refuses_the_path(export):
-    export.accepts_path = False
+def test_render_chooses_nothing_in_a_submenu_that_is_not_exports(export):
+    export.submenu_top = 55  # seen live: where the submenus that open other projects are
 
-    with pytest.raises(fl_render.RenderError, match="render window did not open"):
+    with pytest.raises(fl_render.RenderError, match="not where the File menu's Export"):
         fl_render.render_wav(export.target, timeout=0.0)
-    assert export.events[-1] == "esc"
-    assert export.windows["#32770"] == 0
+    assert ENTER not in export.events and export.menus == 0
 
 
-def test_render_stops_typing_when_fl_loses_focus(export, monkeypatch):
-    trigger = SimpleNamespace(focus=lambda: True, has_focus=lambda: False)
-    monkeypatch.setattr(fl_render, "get_trigger", lambda: trigger)
+def test_render_does_not_start_while_fl_shows_a_message_box(export):
+    export.message = "FL Studio trial"
 
-    with pytest.raises(fl_render.RenderError, match="lost focus"):
+    with pytest.raises(fl_render.RenderError, match="'FL Studio trial'.*fl_close_message"):
         fl_render.render_wav(export.target, timeout=0.0)
-    assert export.events == ["ctrl+r"]
+    assert "file menu" not in export.events
 
 
-def test_render_needs_fl_in_front_and_windows(export, monkeypatch):
-    trigger = SimpleNamespace(focus=lambda: False, has_focus=lambda: False)
-    monkeypatch.setattr(fl_render, "get_trigger", lambda: trigger)
-    with pytest.raises(fl_render.RenderError, match="brought to the front"):
+def test_render_chooses_nothing_while_the_pointer_is_over_the_menu(export):
+    export.pointer_on_menu = True
+
+    with pytest.raises(fl_render.RenderError, match="pointer is over"):
+        fl_render.render_wav(export.target, timeout=0.0)
+    assert ENTER not in export.events and export.menus == 0
+
+
+def test_a_render_that_is_only_slow_is_left_running(export):
+    export.finishes = False
+
+    with pytest.raises(fl_render.RenderError, match="did not finish"):
+        fl_render.render_wav(export.target, timeout=0.0)
+    assert export.windows[RENDER_WINDOW] == 1
+    assert f"close {RENDER_WINDOW}" not in export.events
+
+
+def test_render_reports_a_file_that_was_not_written(export):
+    export.writes_file = False
+
+    with pytest.raises(fl_render.RenderError, match="was not written"):
         fl_render.render_wav(export.target, timeout=0.0)
 
+
+def test_render_is_windows_only(export, monkeypatch):
     monkeypatch.setattr(fl_render.platform, "system", lambda: "Darwin")
+
     with pytest.raises(fl_render.RenderError, match="only supported on Windows"):
         fl_render.render_wav(export.target, timeout=0.0)
 
 
-def test_render_reports_a_keyboard_failure(export, monkeypatch):
-    def broken():
-        raise OSError("no display")
+def test_render_reports_a_failure_to_reach_fls_windows(export, monkeypatch):
+    def broken() -> bool:
+        raise OSError("no desktop")
 
-    monkeypatch.setattr(fl_render, "_keyboard", broken)
+    monkeypatch.setattr(fl_render.fl_windows, "click_main_menu", broken)
 
-    with pytest.raises(fl_render.RenderError, match="no display"):
+    with pytest.raises(fl_render.RenderError, match="no desktop"):
         fl_render.render_wav(export.target, timeout=0.0)
+
+
+def test_a_failure_halfway_the_export_leaves_nothing_open(export, monkeypatch):
+    def broken(name: str) -> bool:
+        raise OSError("no desktop")
+
+    monkeypatch.setattr(fl_render.fl_windows, "confirm_dialog_with_file_name", broken)
+
+    with pytest.raises(fl_render.RenderError, match="no desktop"):
+        fl_render.render_wav(export.target, timeout=0.0)
+    assert export.menus == 0 and export.windows == {DIALOG: 0, RENDER_WINDOW: 0}
 
 
 # --- tools -----------------------------------------------------------------
@@ -464,6 +542,140 @@ def test_render_tool_reports_a_failed_render(tools, monkeypatch):
     monkeypatch.setattr(audio_tools, "render_wav", fails)
 
     assert tools["fl_render"]() == {"error": "a dialog is open"}
+
+
+class Rack:
+    """A connection with three channels (the second one muted) whose solo state is tracked."""
+
+    def __init__(self) -> None:
+        self.names = ["Kick", "Pad", "Lead"]
+        self.muted = {1}
+        self.soloed: int | None = None
+        self.sent: list[tuple[str, dict]] = []
+        self.fail: str | None = None
+
+    def send_command(self, action: str, params: dict | None = None, timeout: float = 2.0):
+        params = params or {}
+        self.sent.append((action, params))
+        if action == self.fail:
+            raise RuntimeError("MIDI port closed")
+        result: dict = {}
+        if action == "channels.getAll":
+            result = {"channels": [
+                {"index": i, "name": name, "is_muted": i in self.muted}
+                for i, name in enumerate(self.names)
+            ]}
+        elif action == "transport.getStatus":
+            result = {"loop_mode": "song"}
+        elif action == "channels.solo":
+            self.soloed = params["index"] if params["solo"] else None
+            self.muted = set()  # FL: taking a solo off unmutes everything
+        elif action == "channels.mute":
+            self.muted.add(params["index"])
+        return {"success": True, "id": "x", **result}
+
+
+@pytest.fixture
+def rack(tools, monkeypatch) -> Rack:
+    fake = Rack()
+    monkeypatch.setattr(connection, "get_connection", lambda: fake)
+    return fake
+
+
+def _each_stem_sounds(monkeypatch, rack: Rack, levels: dict[int, float | None]) -> list[Path]:
+    """FL renders the soloed channel: a tone at its level, or silence for None."""
+    rendered: list[Path] = []
+
+    def render(path: Path, timeout: float) -> float:
+        level = levels[rack.soloed]
+        tone = sine(440, 1.0, level) if level is not None else np.zeros(RATE)
+        write_wav(path, stereo(tone), RATE, 1, 16)
+        rendered.append(path)
+        return 0.5
+
+    monkeypatch.setattr(audio_tools, "render_wav", render)
+    return rendered
+
+
+def test_stems_render_every_unmuted_channel_on_its_own(tools, rack, monkeypatch):
+    rendered = _each_stem_sounds(monkeypatch, rack, {0: -6, 2: None})
+
+    result = tools["fl_render_stems"]()
+
+    assert result["mode"] == "song"
+    kick, lead = result["stems"]
+    assert (kick["index"], kick["name"], kick["silent"]) == (0, "Kick", False)
+    assert kick["peak_dbfs"] == pytest.approx(-6.0, abs=0.01)
+    assert kick["frequency_percent"]["low_mid"] > 99
+    assert set(kick["key"]) >= {"key", "confidence"}
+    assert lead == {"index": 2, "name": "Lead", "silent": True}
+    assert not any(path.exists() for path in rendered)  # the stem files are not kept
+
+
+def test_stems_leave_mutes_and_solos_as_they_were(tools, rack, monkeypatch):
+    _each_stem_sounds(monkeypatch, rack, {0: -6, 2: -6})
+
+    assert "warning" not in tools["fl_render_stems"]()
+    assert rack.soloed is None and rack.muted == {1}
+
+
+def test_stems_can_be_limited_to_roles_and_kept(tools, rack, monkeypatch):
+    rendered = _each_stem_sounds(monkeypatch, rack, {1: -12})
+
+    result = tools["fl_render_stems"](channels=["pad"], keep_files=True)
+
+    assert [stem["name"] for stem in result["stems"]] == ["Pad"]  # muted, but asked for
+    assert Path(result["stems"][0]["path"]) == rendered[0] and rendered[0].exists()
+    assert rendered[0].name.startswith("stem-1-")
+
+
+def test_stems_reject_an_unknown_role_before_touching_fl(tools, rack):
+    assert "tuba" in tools["fl_render_stems"](channels=["tuba"])["error"]
+    assert "channels.solo" not in [action for action, _ in rack.sent]
+
+
+def test_stems_reject_a_channel_the_rack_does_not_have(tools, rack):
+    assert "no channel 99" in tools["fl_render_stems"](channels=[0, 99])["error"]
+    assert "channels.solo" not in [action for action, _ in rack.sent]
+
+
+def test_a_mono_stem_has_no_stereo_correlation(tools, rack, monkeypatch):
+    def render(path: Path, timeout: float) -> float:
+        write_wav(path, sine(440, 1.0, -6).reshape(-1, 1), RATE, 1, 16)
+        return 0.5
+
+    monkeypatch.setattr(audio_tools, "render_wav", render)
+
+    stem = tools["fl_render_stems"](channels=[0])["stems"][0]
+
+    assert stem["silent"] is False and stem["stereo_correlation"] is None
+
+
+def test_a_failed_stem_render_takes_the_solo_off_again(tools, rack, monkeypatch):
+    def fails(path: Path, timeout: float) -> float:
+        raise fl_render.RenderError("a dialog is open")
+
+    monkeypatch.setattr(audio_tools, "render_wav", fails)
+
+    assert tools["fl_render_stems"]() == {"error": "a dialog is open"}
+    assert rack.soloed is None and rack.muted == {1}
+
+
+def test_stems_report_a_lost_connection(tools, rack):
+    rack.fail = "channels.getAll"
+
+    assert tools["fl_render_stems"]() == {"error": "MIDI port closed"}
+
+
+def test_the_measurements_are_plain_json(tools, tmp_path):
+    import json
+
+    path = write_wav(tmp_path / "a.wav", stereo(sine(440, 1.0, -6)), RATE, 1, 16)
+
+    result = tools["audio_analyze"](str(path))
+
+    assert json.loads(json.dumps(result)) == result  # no numpy numbers left in it
+    assert type(result["peak_dbfs"]) is float
 
 
 def test_analyze_tool_measures_a_file(tools, tmp_path):

@@ -1,4 +1,4 @@
-"""Measurements of a piece of audio: loudness, peaks, spectrum balance, stereo width, key.
+"""Measurements of a piece of audio: loudness, peaks, spectrum balance, stereo width, key, pitch.
 
 Everything here describes the sound; judging it against a style is left to the
 caller. Samples are arrays of shape (frames, channels) in -1.0..1.0.
@@ -6,7 +6,11 @@ caller. Samples are arrays of shape (frames, channels) in -1.0..1.0.
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
+
+from fl_studio_mcp.audio.pitch import estimate_pitch
 
 # ITU-R BS.1770 loudness: 400 ms blocks overlapping by 75%, gated at -70 LUFS
 # and at 10 LU below the level of the blocks that pass that first gate.
@@ -223,6 +227,17 @@ def _silence(mono: np.ndarray, rate: int) -> tuple[float, float]:
     return audible[0] / rate, (len(mono) - 1 - audible[-1]) / rate
 
 
+def _plain(value: Any) -> Any:
+    """The same data with numpy's numbers turned into Python's, so it can be sent as JSON."""
+    if isinstance(value, dict):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(item) for item in value]
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
 def analyze(samples: np.ndarray, rate: int, window: float = 4.0) -> dict:
     """All measurements of a piece of audio as one JSON-friendly dict."""
     if samples.ndim != 2 or not len(samples):
@@ -241,7 +256,7 @@ def analyze(samples: np.ndarray, rate: int, window: float = 4.0) -> dict:
     loudness = integrated_loudness(weighted, rate)
     lead, trail = _silence(mono, rate)
     power, frequencies = power_spectrum(mono, rate)
-    return {
+    return _plain({
         "duration_seconds": round(len(samples) / rate, 2),
         "sample_rate": rate,
         "channels": samples.shape[1],
@@ -254,5 +269,6 @@ def analyze(samples: np.ndarray, rate: int, window: float = 4.0) -> dict:
         "frequency_balance": _band_balance(power, frequencies),
         "stereo": stereo_image(samples),
         "key": _estimate_key(power, frequencies),
+        "pitch": estimate_pitch(mono, rate),
         "loudness_over_time": loudness_timeline(weighted, rate, window),
-    }
+    })

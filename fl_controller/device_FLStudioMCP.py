@@ -21,6 +21,7 @@ Communication flow:
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 # FL Studio API modules (available when running inside FL Studio)
@@ -215,6 +216,8 @@ def dispatch_command(action: str, params: dict) -> dict:
         return handle_mixer_get_all_tracks(params)
     elif action == "mixer.setTrackVolume":
         return handle_mixer_set_track_volume(params)
+    elif action == "mixer.setTrackVolumeDb":
+        return handle_mixer_set_track_volume_db(params)
     elif action == "mixer.setTrackPan":
         return handle_mixer_set_track_pan(params)
     elif action == "mixer.muteTrack":
@@ -315,6 +318,26 @@ def dispatch_command(action: str, params: dict) -> dict:
         return handle_plugins_next_preset(params)
     elif action == "plugins.prevPreset":
         return handle_plugins_prev_preset(params)
+    elif action == "mixer.setEffect":
+        return handle_mixer_set_effect(params)
+    elif action == "mixer.getTrackEffects":
+        return handle_mixer_get_track_effects(params)
+    elif action == "project.undo":
+        return handle_project_undo(params)
+    elif action == "plugins.listPresets":
+        return handle_plugins_list_presets(params)
+    elif action == "browser.getFocused":
+        return handle_browser_get_focused()
+    elif action == "browser.navigate":
+        return handle_browser_navigate(params)
+    elif action == "browser.selectTab":
+        return handle_browser_select_tab(params)
+    elif action == "browser.toggleNode":
+        return handle_browser_toggle_node(params)
+    elif action == "ui.focusWindow":
+        return handle_ui_focus_window(params)
+    elif action == "browser.openFocused":
+        return handle_browser_open_focused()
     elif action == "plugins.getColor":
         return handle_plugins_get_color(params)
 
@@ -451,6 +474,47 @@ def handle_mixer_set_track_volume(params: dict) -> dict:
     volume = params.get("volume", 0.8)
     mixer.setTrackVolume(track, volume)
     return {
+        "volume": mixer.getTrackVolume(track),
+        "volume_db": mixer.getTrackVolume(track, 1),
+    }
+
+
+MAX_TRACK_DB = 5.6  # a mixer fader all the way up
+MIN_TRACK_DB = -80.0
+FADER_SEARCH_STEPS = 24
+
+
+def handle_mixer_set_track_volume_db(params: dict) -> dict:
+    """Set a mixer track's fader to a level in dB.
+
+    FL takes the fader's position (0-1, 0.8 is 0 dB) and tells the dB it gives,
+    but not the other way round, so the position is found by halving.
+    """
+    track = params.get("track")
+    db = params.get("db")
+    error = _check_mixer_track(track)
+    if error:
+        return {"error": error}
+    if isinstance(db, bool) or not isinstance(db, (int, float)) or not (
+            MIN_TRACK_DB <= db <= MAX_TRACK_DB):
+        return {"error": "db must be a number from %g to %g" % (MIN_TRACK_DB, MAX_TRACK_DB)}
+
+    before = mixer.getTrackVolume(track)
+    low, high = 0.0, 1.0
+    try:
+        for _ in range(FADER_SEARCH_STEPS):
+            middle = (low + high) / 2
+            mixer.setTrackVolume(track, middle)
+            if mixer.getTrackVolume(track, 1) < db:
+                low = middle
+            else:
+                high = middle
+    except Exception:
+        mixer.setTrackVolume(track, before)  # not left wherever the search was
+        raise
+    mixer.setTrackVolume(track, high)
+    return {
+        "track": track,
         "volume": mixer.getTrackVolume(track),
         "volume_db": mixer.getTrackVolume(track, 1),
     }
@@ -745,10 +809,21 @@ def handle_channels_route_to_mixer(params: dict) -> dict:
     """Route channel to mixer track."""
     channel_index = params.get("channel_index", 0)
     mixer_track = params.get("mixer_track", 0)
+    # FL silently routes to its last insert track when asked for one that isn't
+    # there. trackCount() counts the master, the inserts and the "current" track.
+    last_insert = mixer.trackCount() - 2
+    count = channels.channelCount(True)
+    if (not isinstance(channel_index, int) or isinstance(channel_index, bool)
+            or not 0 <= channel_index < count):
+        return {"error": "channel_index must be 0-%d, got %r" % (count - 1, channel_index)}
+    if (not isinstance(mixer_track, int) or isinstance(mixer_track, bool)
+            or not 0 <= mixer_track <= last_insert):
+        return {"error": "mixer_track must be 0 (master) to %d, the last insert track of "
+                         "this project's mixer; got %r" % (last_insert, mixer_track)}
     channels.setTargetFxTrack(channel_index, mixer_track, True)
     return {
         "channel_name": channels.getChannelName(channel_index, True),
-        "mixer_track": mixer_track,
+        "mixer_track": channels.getTargetFxTrack(channel_index, True),
     }
 
 
@@ -1225,3 +1300,232 @@ def handle_plugins_get_color(params: dict) -> dict:
         color = plugins.getColor(index, -1, use_global)
 
     return {"color": hex(color)}
+
+
+def handle_plugins_list_presets(params: dict) -> dict:
+    """Names of a plugin's internal presets, in order."""
+    index = params.get("index", 0)
+    slot_index = params.get("slot_index", -1)
+    use_global = True if slot_index >= 0 else params.get("use_global", True)
+
+    count = plugins.getPresetCount(index, slot_index, use_global)
+    names = [
+        plugins.getName(index, slot_index, midi.FPN_Preset, preset, use_global)
+        for preset in range(count)
+    ]
+    return {"count": count, "presets": names}
+
+
+# =============================================================================
+# Browser Handlers
+# =============================================================================
+
+BROWSER_DIRECTIONS = {"previous": midi.FPT_Up, "next": midi.FPT_Down}
+MAX_BROWSER_STEPS = 500
+BROWSER_FOLDER_TYPE = -100  # folders and collections are this or lower
+# Two items may share a name, so the cursor only counts as stuck after a few repeats.
+BROWSER_STUCK_REPEATS = 3
+# Seconds one command may walk before answering, to stay inside the server's timeout.
+BROWSER_TIME_BUDGET = 1.0
+
+
+def _focused_browser_node() -> dict:
+    return {"name": ui.getFocusedNodeCaption(), "file_type": ui.getFocusedNodeFileType()}
+
+
+def handle_browser_get_focused() -> dict:
+    """The item the browser's cursor is on."""
+    return _focused_browser_node()
+
+
+def handle_browser_navigate(params: dict) -> dict:
+    """Move the browser's cursor up or down; returns every item it reached.
+
+    `until` (a name, with `until_type` its file type) stops at the first such item.
+    `collapse` closes every folder it reaches, so the walk stays on one level.
+    `stuck` is True when the cursor stopped moving: the top or bottom of the list.
+    It may stop before `steps` when it has taken long; `items` tells how far it got.
+
+    FL doesn't say whether the cursor moved. The same item again means the end
+    of the list, unless a different item follows: then they were neighbours alike
+    in name and type (a folder holding a folder of its own name). Repeats still
+    undecided at the last step are returned as `pending`: they count if the
+    next command finds the cursor moving on.
+    """
+    direction = BROWSER_DIRECTIONS.get(params.get("direction", "next"))
+    steps = params.get("steps", 1)
+    until = params.get("until")
+    until_type = params.get("until_type")
+    collapse = params.get("collapse", False)
+    if direction is None:
+        return {"error": "direction must be 'next' or 'previous'"}
+    if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= MAX_BROWSER_STEPS:
+        return {"error": "steps must be 1-%d" % MAX_BROWSER_STEPS}
+
+    reached = []
+    repeats = 0
+    previous = _focused_browser_node()
+    started = time.time()
+    for _ in range(steps):
+        ui.navigateBrowser(direction, False)
+        node = _focused_browser_node()
+        if collapse and node["file_type"] <= BROWSER_FOLDER_TYPE:
+            ui.toggleBrowserNode(0)
+        if node == previous:
+            repeats += 1
+            if repeats >= BROWSER_STUCK_REPEATS:
+                return {"items": reached, "found": False, "stuck": True, "pending": []}
+            continue
+        reached.extend([previous] * repeats)
+        repeats = 0
+        previous = node
+        reached.append(node)
+        if node["name"] == until and until_type in (None, node["file_type"]):
+            return {"items": reached, "found": True, "stuck": False, "pending": []}
+        if time.time() - started > BROWSER_TIME_BUDGET:
+            break
+    return {"items": reached, "found": False, "stuck": False, "pending": [previous] * repeats}
+
+
+def handle_browser_select_tab(params: dict) -> dict:
+    """Step through the browser's tabs; returns the tab now showing."""
+    directions = {"left": midi.FPT_Left, "right": midi.FPT_Right, "first": 0}
+    direction = directions.get(params.get("direction", "first"))
+    if direction is None:
+        return {"error": "direction must be 'left', 'right' or 'first'"}
+    return {"tab": ui.navigateBrowserTabs(direction)}
+
+
+def handle_browser_toggle_node(params: dict) -> dict:
+    """Expand (1), collapse (0) or toggle (-1) the focused folder."""
+    ui.toggleBrowserNode(params.get("value", -1))
+    return _focused_browser_node()
+
+
+def handle_browser_open_focused() -> dict:
+    """Open the focused item, as clicking it would."""
+    node = _focused_browser_node()
+    ui.selectBrowserMenuItem()
+    return node
+
+
+# =============================================================================
+# UI Handlers
+# =============================================================================
+
+UI_WINDOWS = {
+    "mixer": midi.widMixer, "channel rack": midi.widChannelRack,
+    "playlist": midi.widPlaylist, "piano roll": midi.widPianoRoll,
+    "browser": midi.widBrowser,
+}
+
+
+def _ui_state() -> dict:
+    return {
+        "focused_window": ui.getFocusedFormCaption(),
+        "focused_window_id": ui.getFocusedFormID(),
+        "in_popup_menu": bool(ui.isInPopupMenu()),
+    }
+
+
+def handle_ui_focus_window(params: dict) -> dict:
+    """Show one of FL's main windows and give it the focus."""
+    window = UI_WINDOWS.get(params.get("window"))
+    if window is None:
+        return {"error": "window must be one of: %s" % ", ".join(sorted(UI_WINDOWS))}
+    ui.showWindow(window)
+    ui.setFocused(window)
+    return _ui_state()
+
+
+# =============================================================================
+# Mixer effect slots and undo
+# =============================================================================
+
+MIXER_SLOTS = 10
+# A slot's mix knob at 100%. Seen live: it is set on one scale and read back on another.
+EFFECT_MIX_FULL = 12800
+EFFECT_MIX_READ_FULL = 1 << 30
+MAX_UNDO_STEPS = 50
+
+
+def _check_mixer_track(track) -> str:
+    if not isinstance(track, int) or isinstance(track, bool):
+        return "track must be an integer"
+    if not 0 <= track < mixer.trackCount():
+        return "track must be 0-%d" % (mixer.trackCount() - 1)
+    return ""
+
+
+def _effect_event(track: int, slot: int, event: int) -> int:
+    """ID of one of an effect slot's own controls (mute switch, mix level)."""
+    return mixer.getTrackPluginId(track, slot) + event
+
+
+def _track_effects(track: int) -> list:
+    return [
+        {
+            "slot": slot,
+            "plugin": plugins.getPluginName(track, slot, False, True),
+            "enabled": mixer.getEventValue(_effect_event(track, slot, midi.REC_Plug_Mute)) != 0,
+            "mix": round(
+                mixer.getEventValue(_effect_event(track, slot, midi.REC_Plug_MixLevel))
+                / EFFECT_MIX_READ_FULL, 3),
+        }
+        for slot in range(MIXER_SLOTS)
+        if plugins.isValid(track, slot, True)
+    ]
+
+
+def handle_mixer_set_effect(params: dict) -> dict:
+    """Switch an effect slot on or off and/or set how much of it is mixed in (0-1)."""
+    track = params.get("track")
+    slot = params.get("slot")
+    enabled = params.get("enabled")
+    mix = params.get("mix")
+    error = _check_mixer_track(track)
+    if error:
+        return {"error": error}
+    if not isinstance(slot, int) or isinstance(slot, bool) or not 0 <= slot < MIXER_SLOTS:
+        return {"error": "slot must be 0-%d" % (MIXER_SLOTS - 1)}
+    if not plugins.isValid(track, slot, True):
+        return {"error": "Mixer track %d has no effect in slot %d" % (track, slot)}
+    if mix is not None and (isinstance(mix, bool) or not isinstance(mix, (int, float))
+                            or not 0 <= mix <= 1):
+        return {"error": "mix must be a number from 0 to 1"}
+    if enabled is not None and not isinstance(enabled, bool):
+        return {"error": "enabled must be true or false"}
+    if enabled is None and mix is None:
+        return {"error": "Give enabled, mix or both"}
+
+    flags = midi.REC_Control | midi.REC_UpdateControl
+    if enabled is not None:
+        event = _effect_event(track, slot, midi.REC_Plug_Mute)
+        general.processRECEvent(event, 1 if enabled else 0, flags)
+    if mix is not None:
+        event = _effect_event(track, slot, midi.REC_Plug_MixLevel)
+        general.processRECEvent(event, int(round(mix * EFFECT_MIX_FULL)), flags)
+    return {"track": track, "effects": _track_effects(track)}
+
+
+def handle_mixer_get_track_effects(params: dict) -> dict:
+    """The effect plugins in a mixer track's slots."""
+    track = params.get("track")
+    error = _check_mixer_track(track)
+    if error:
+        return {"error": error}
+    return {"track": track, "name": mixer.getTrackName(track), "effects": _track_effects(track)}
+
+
+def handle_project_undo(params: dict) -> dict:
+    """Step back in FL's undo history."""
+    steps = params.get("steps", 1)
+    if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= MAX_UNDO_STEPS:
+        return {"error": "steps must be 1-%d" % MAX_UNDO_STEPS}
+    for _ in range(steps):
+        general.undoUp()
+    return {
+        "undone": steps,
+        "history_position": general.getUndoHistoryPos(),
+        "history_count": general.getUndoHistoryCount(),
+    }

@@ -260,6 +260,32 @@ def register_plugin_tools(mcp: FastMCP) -> None:
         return result.get("count", 0)
 
     @mcp.tool()
+    def fl_list_presets(index: int | str, slot_index: int = -1) -> dict:
+        """List the names of a plugin's own presets, in the order fl_next_preset steps through.
+
+        Only plugins with built-in presets have any (FLEX lists the presets of
+        its current pack). For other sounds see fl_browser_list and
+        fl_load_in_channel.
+
+        Args:
+            index: Channel index (global) or role, or mixer track index
+            slot_index: Effect slot index for mixer plugins (-1 for channel rack)
+
+        Returns {"count", "presets": [names]} or {"error": ...}.
+        """
+        try:
+            index = _plugin_index(index, slot_index)
+        except ValueError as e:
+            return {"error": str(e)}
+        result = get_connection().send_command("plugins.listPresets", {
+            "index": index,
+            "slot_index": slot_index,
+        })
+        if not result.get("success", False) and "error" in result:
+            return {"error": result["error"]}
+        return {"count": result.get("count", 0), "presets": result.get("presets", [])}
+
+    @mcp.tool()
     def fl_next_preset(
         index: int | str,
         slot_index: int = -1,

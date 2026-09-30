@@ -1,13 +1,16 @@
-"""Running a piano roll script from the piano roll's menu, by mouse and keyboard.
+"""Running a piano roll script from the piano roll's menu, without taking the focus.
 
-FL's "run last script again" shortcut (Ctrl+Alt+Y) only works once a script has
-been run from the menu in that FL session. This does that first run: menu arrow,
-Tools, then the script in the list at the end of that submenu. Windows only.
+FL's "run last script again" shortcut (Ctrl+Alt+Y) needs FL in front and only
+works once a script has been run from the menu in that FL session. This walks
+the menu instead: menu arrow, Tools, then the script in the list at the end of
+that submenu. The click and the keys are posted to FL's own windows, so FL can
+stay in the background and nothing is typed into another program. Windows only.
 
 Menu items can't be read from outside FL, so the script is reached by position:
-Up from the top of the Tools submenu wraps to its last entry, and the scripts
-are listed last, sorted by name. Every step is checked by counting FL's open
-popup menus, so keys never land in a dialog or another panel.
+End goes to the Tools submenu's last entry, and the scripts are listed last,
+sorted by name. Every step is checked by counting FL's open popup menus, and
+Enter is only pressed if the mouse pointer isn't over the menu, where it would
+have moved the highlight.
 """
 
 from __future__ import annotations
@@ -16,10 +19,9 @@ import logging
 import platform
 import time
 from pathlib import Path
-from typing import Any
 
 from fl_studio_mcp.utils import fl_windows
-from fl_studio_mcp.utils.fl_trigger import get_trigger, keyboard_lock
+from fl_studio_mcp.utils.fl_trigger import keyboard_lock
 from fl_studio_mcp.utils.paths import get_piano_roll_scripts_dir
 
 logger = logging.getLogger(__name__)
@@ -28,11 +30,12 @@ SCRIPT_NAME = "ComposeWithLLM"
 SCRIPT_SUFFIX = ".pyscript"
 # Where FL keeps its own piano roll scripts, below its install folder.
 STOCK_SCRIPTS_DIR = Path("System") / "Config" / "Piano roll scripts"
-TOOLS_MENU_KEY = "t"
+TOOLS_MENU_KEY = ord("T")
 
 MENU_TIMEOUT = 1.5  # seconds for a popup menu to open or close
-MENU_POLL_INTERVAL = 0.05
-KEY_DELAY = 0.05
+MENU_POLL_INTERVAL = 0.02
+ATTEMPTS = 3
+RETRY_DELAY = 0.4
 
 
 def _script_names(folder: Path) -> set[str] | None:
@@ -71,15 +74,6 @@ def _script_folders() -> list[Path]:
     return folders
 
 
-def _devices() -> tuple[Any, Any, Any, Any]:
-    """pynput's keyboard, Key enum, mouse and left button (imported late: needs a desktop)."""
-    from pynput.keyboard import Controller, Key
-    from pynput.mouse import Button
-    from pynput.mouse import Controller as MouseController
-
-    return Controller(), Key, MouseController(), Button.left
-
-
 def _wait_for_menus(count: int) -> bool:
     """Wait until FL has exactly `count` popup menus open."""
     deadline = time.monotonic() + MENU_TIMEOUT
@@ -91,79 +85,72 @@ def _wait_for_menus(count: int) -> bool:
         time.sleep(MENU_POLL_INTERVAL)
 
 
-def _wait_for_arrow() -> tuple[int, int] | None:
-    """The piano roll's menu arrow once it can be clicked, or None.
-
-    Seen live: right after FL is brought to the front (or the piano roll is
-    re-shown), Windows still reports the window that was on top for a moment.
-    If it stays covered (FL sometimes re-shows the piano roll partly under the
-    docked browser), the piano roll is moved into the open once.
-    """
-    arrow = _poll_for_arrow()
-    if arrow is None and fl_windows.move_piano_roll_into_view():
-        arrow = _poll_for_arrow()
-    return arrow
-
-
-def _poll_for_arrow() -> tuple[int, int] | None:
-    deadline = time.monotonic() + MENU_TIMEOUT
-    while True:
-        arrow = fl_windows.piano_roll_menu_arrow()
-        if arrow is not None or time.monotonic() >= deadline:
-            return arrow
-        time.sleep(MENU_POLL_INTERVAL)
-
-
-def _close_menus(keyboard: Any, key: Any) -> None:
-    for _ in range(fl_windows.popup_menu_count()):
-        keyboard.tap(key.esc)
-        time.sleep(KEY_DELAY)
-
-
 def run_script_from_menu(name: str = SCRIPT_NAME) -> bool:
     """Run a piano roll script through the piano roll's Tools menu.
 
     The piano roll must be showing. Returns True if the menu was walked to the
-    script and closed again; the caller confirms the script ran from its output.
+    script and Enter pressed there; the caller confirms the script ran from its
+    output.
     """
     if platform.system() != "Windows":
         return False
     try:
         with keyboard_lock:
-            return _run_script_from_menu(name)
+            after = scripts_after(name, _script_folders())
+            if after is None:
+                return False
+            for _ in range(ATTEMPTS):
+                outcome = _walk_to_script(after)
+                if outcome is not None:
+                    return outcome
+                time.sleep(RETRY_DELAY)  # the pointer was over the menu: let it move on
+            return False
     except Exception:
         logger.exception("Running %s from the piano roll menu failed", name)
         return False
 
 
-def _run_script_from_menu(name: str) -> bool:
-    after = scripts_after(name, _script_folders())
-    if after is None or not get_trigger().focus():
+def _walk_to_script(after: int) -> bool | None:
+    """One walk: True if Enter was pressed on the script, None if the pointer got in the way."""
+    if fl_windows.popup_menu_count() != 0 or not fl_windows.click_piano_roll_menu_arrow():
         return False
-    arrow = _wait_for_arrow()
-    if arrow is None or fl_windows.popup_menu_count() != 0:
-        return False
-
-    keyboard, key, mouse, left_button = _devices()
     try:
-        mouse.position = arrow
-        time.sleep(KEY_DELAY)
-        mouse.click(left_button)
         if not _wait_for_menus(1):
             return False
-        keyboard.tap(TOOLS_MENU_KEY)
-        if not _wait_for_menus(2):
+        if not fl_windows.press_in_popup_menu(TOOLS_MENU_KEY, menus=1) or not _wait_for_menus(2):
             return False
-
-        keyboard.tap(key.right)  # into the submenu, on its first entry
-        for _ in range(after + 1):  # Up wraps to the last entry; scripts are listed last
-            time.sleep(KEY_DELAY)
-            keyboard.tap(key.up)
-        time.sleep(KEY_DELAY)
-        # Still exactly the menu and its Tools submenu: the walk didn't open or close one.
-        if fl_windows.popup_menu_count() != 2:
-            return False
-        keyboard.tap(key.enter)
-        return _wait_for_menus(0)
+        # End goes to the submenu's last entry wherever the highlight was (the
+        # pointer may have put it anywhere); the scripts are listed last.
+        for key in [fl_windows.VK_END] + [fl_windows.VK_UP] * after:
+            # Still exactly the menu and its Tools submenu: no key opened or closed one.
+            if not fl_windows.press_in_popup_menu(key, menus=2):
+                return False
+        if fl_windows.pointer_over_menu():
+            return None
+        return fl_windows.press_in_popup_menu(fl_windows.VK_RETURN, menus=2)
     finally:
-        _close_menus(keyboard, key)  # no menu may be left open, whatever happened
+        fl_windows.close_popup_menus()  # no menu may be left open, whatever happened
+
+
+def close_menus_left_open() -> None:
+    """Close menus still open once a run has gone unanswered.
+
+    Right after Enter a menu counts as closed while it fades; one that FL left
+    open without acting is only seen, and closed, after that. Never raises.
+    """
+    try:
+        fl_windows.close_popup_menus()
+    except Exception:
+        logger.exception("Could not close FL Studio's menus")
+
+
+def close_script_dialogs() -> int:
+    """Close the settings windows of piano roll scripts; returns how many there were.
+
+    One showing up after a walk means the walk reached another script. Closing
+    it discards that script's changes.
+    """
+    count = fl_windows.window_count(fl_windows.SCRIPT_DIALOG_CLASS)
+    if count:
+        fl_windows.close_windows(fl_windows.SCRIPT_DIALOG_CLASS)
+    return count

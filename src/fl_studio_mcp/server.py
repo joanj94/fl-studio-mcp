@@ -23,6 +23,7 @@ from fastmcp import FastMCP
 from fl_studio_mcp.tools import (
     register_arrange_tools,
     register_audio_tools,
+    register_browser_tools,
     register_channel_setup_tools,
     register_channel_tools,
     register_mixer_tools,
@@ -34,6 +35,7 @@ from fl_studio_mcp.tools import (
     register_roles_tools,
     register_style_tools,
     register_transport_tools,
+    register_tuning_tools,
 )
 from fl_studio_mcp.utils.connection import get_connection, reset_connection
 
@@ -61,8 +63,12 @@ Available tool categories:
 - Mixer: Volume, pan, mute, solo, track management
 - Channels: Channel info, note triggering, step sequencer incl. per-step pitch,
   velocity and pan (fl_set_step_params)
-- Channel setup: fl_add_channel adds a channel with an instrument plugin from
-  fl_list_generators. It types into FL's plugin picker, so FL comes to the front.
+- Sounds (Windows): fl_browser_list shows what FL's browser holds (stock "Packs",
+  the user's own sample folders, "Channel presets", "Plugin presets", "Plugin
+  database"). fl_load_in_new_channel makes a channel from a sample, preset or
+  plugin; fl_load_in_channel replaces a channel's sound; fl_add_effect puts an
+  effect on a mixer track; fl_add_channel adds a plugin by name. Name channels
+  after their role. fl_undo takes back a channel or effect.
 - Plugins: Parameter control, preset navigation
 - Piano roll: Write, delete and read persistent notes (fl_send_notes, ...). Pass
   channel/pattern to aim at a roll; notes may carry pan, slide, porta, fine_pitch
@@ -71,16 +77,22 @@ Available tool categories:
   looped patterns written into one long pattern; play it in pattern mode).
   fl_render renders what FL would play to a WAV and returns measurements
   (loudness, peaks, frequency balance, stereo image, key, loudness over time);
-  audio_analyze measures any WAV. You can't hear the result, so use them to
-  check your work: render, read the numbers, adjust levels or notes, render again.
+  audio_analyze measures any WAV. fl_render_stems renders each channel on its
+  own, to see which part is too loud, clips, or crowds a frequency range. You
+  can't hear the result, so use them to check your work: render, read the
+  numbers, adjust levels, sounds or notes, render again.
+- Tuning: fl_measure_pitch plays one note on a channel alone and tells which
+  pitch comes out. Do it for every pitched sound you load (kicks included)
+  and write its notes transposed by what it reports, so all parts share a key.
 - Music (music_*): Build notes from scales, chords, roman numerals, scale degrees,
   rhythm grids and rolls, and transform them (arpeggiate, transpose, humanize, ...).
   These don't touch FL Studio; their output goes straight into fl_send_notes.
   Call music_reference once to see the vocabulary. Pitch names use C4 = MIDI 60.
 
 Important limitations:
-1. Cannot load effects, samples or presets - fl_add_channel only adds an
-   instrument plugin in its default state
+1. Loading sounds and rendering work on Windows only; loading only for what FL's
+   browser shows.
+   Channels and effects can't be deleted, only undone right away (fl_undo).
 2. Cannot place pattern clips in the playlist or create automation. To build a
    song, fl_arrange writes sections of looped patterns into one long pattern.
 3. Note triggering (fl_trigger_note) is real-time only - notes won't persist
@@ -175,6 +187,7 @@ register_transport_tools(mcp)
 register_mixer_tools(mcp)
 register_channel_tools(mcp)
 register_channel_setup_tools(mcp)
+register_browser_tools(mcp)
 register_plugin_tools(mcp)
 register_piano_roll_tools(mcp)
 register_arrange_tools(mcp)
@@ -184,6 +197,7 @@ register_project_tools(mcp)
 register_pattern_tools(mcp)
 register_roles_tools(mcp)
 register_style_tools(mcp)
+register_tuning_tools(mcp)
 
 
 def main():

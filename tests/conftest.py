@@ -10,6 +10,7 @@ from types import ModuleType
 
 import pytest
 
+from tests.fake_browser import FakeFL
 from tests.fakes import make_controller_modules, make_flpianoroll
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -29,14 +30,13 @@ def _load_source(name: str, path: Path) -> ModuleType:
 def no_real_input(monkeypatch: pytest.MonkeyPatch) -> None:
     """No test may drive the real keyboard or mouse (FL Studio could be running)."""
     from fl_studio_mcp.tools import piano_roll
-    from fl_studio_mcp.utils import fl_keys, fl_render, piano_roll_menu
+    from fl_studio_mcp.utils import win_focus
 
     def refuse(*args: object) -> None:
         raise AssertionError("a test tried to use the real keyboard or mouse")
 
-    monkeypatch.setattr(fl_keys, "_keyboard", refuse)
-    monkeypatch.setattr(fl_render, "_keyboard", refuse)
-    monkeypatch.setattr(piano_roll_menu, "_devices", refuse)
+    # Windows' own libraries: through them keys and close messages reach a running FL Studio.
+    monkeypatch.setattr(win_focus, "_libraries", refuse)
     monkeypatch.setattr(piano_roll, "run_script_from_menu", lambda: False)
 
 
@@ -55,6 +55,31 @@ def controller(fl_modules: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(module, "COMMAND_FILE", tmp_path / "mcp_command.json")
     monkeypatch.setattr(module, "RESPONSE_FILE", tmp_path / "mcp_response.json")
     return module
+
+
+@pytest.fixture
+def fake_fl(controller: ModuleType, fl_modules: dict, monkeypatch: pytest.MonkeyPatch) -> FakeFL:
+    """A fake FL Studio with a browser, answering through the real controller script."""
+    from fl_studio_mcp.tools import browser
+    from fl_studio_mcp.utils import connection, fl_browser, fl_windows
+
+    fake = FakeFL(controller, fl_modules)
+    monkeypatch.setattr(connection, "get_connection", lambda: fake)
+    monkeypatch.setattr(fl_browser.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(fl_browser, "MENU_TIMEOUT", 0.0)
+    monkeypatch.setattr(browser, "LOAD_TIMEOUT", 0.0)
+    monkeypatch.setattr(browser, "SETTLE_SECONDS", 0.0)
+    monkeypatch.setattr(fl_browser.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(fl_windows, "popup_menu_count", lambda: fake.menus)
+    monkeypatch.setattr(fl_windows, "press_enter_in_popup_menu", fake.press_enter)
+    monkeypatch.setattr(fl_windows, "press_in_popup_menu", fake.press)
+    monkeypatch.setattr(fl_windows, "pointer_over_menu", lambda: fake.pointer_on_menu)
+    monkeypatch.setattr(fl_windows, "close_popup_menus", fake.close_menus)
+    monkeypatch.setattr(fl_windows, "restore_if_minimized", fake.restore)
+    monkeypatch.setattr(fl_windows, "open_message", fake.open_message)
+    monkeypatch.setattr(fl_windows, "close_messages", fake.close_messages)
+    monkeypatch.setattr(fl_windows, "close_all_plugin_windows", fake.close_plugin_windows)
+    return fake
 
 
 @pytest.fixture

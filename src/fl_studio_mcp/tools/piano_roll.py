@@ -25,7 +25,11 @@ from fl_studio_mcp.music.model import DEFAULT_VELOCITY
 from fl_studio_mcp.utils.connection import call
 from fl_studio_mcp.utils.fl_trigger import get_trigger
 from fl_studio_mcp.utils.paths import atomic_write_json, get_piano_roll_scripts_dir
-from fl_studio_mcp.utils.piano_roll_menu import run_script_from_menu
+from fl_studio_mcp.utils.piano_roll_menu import (
+    close_menus_left_open,
+    close_script_dialogs,
+    run_script_from_menu,
+)
 from fl_studio_mcp.utils.roles import resolve_channel
 
 if TYPE_CHECKING:
@@ -158,25 +162,39 @@ def _describe_response(response: dict) -> str:
 
 
 def _trigger(request_ids: list[str]) -> tuple[dict | None, str]:
-    """Trigger the piano roll script and wait for it to confirm request_ids.
+    """Run the piano roll script and wait for it to confirm request_ids.
+
+    On Windows the script is run from the piano roll's menu, which needs no
+    focus. Where that isn't possible, FL is brought to the front and sent the
+    "run last script again" shortcut, which only works once the script has been
+    run from the menu in that FL session.
 
     Returns FL's response (None if there is none) and a message for the AI.
     """
     trigger = get_trigger()
-    if not trigger.is_supported:
-        return None, (
-            f" Auto-trigger not supported on {trigger.platform}. Press the trigger key manually."
-        )
-    if not trigger.trigger(0):
-        return None, f" Warning: Could not trigger FL Studio. Press {trigger.keystroke} manually."
+    ran_from_menu = run_script_from_menu()
+    if not ran_from_menu:
+        if not trigger.is_supported:
+            return None, (
+                f" Auto-trigger not supported on {trigger.platform}. "
+                "Press the trigger key manually."
+            )
+        if not trigger.trigger(0):
+            return None, (
+                f" Warning: Could not trigger FL Studio. Press {trigger.keystroke} manually."
+            )
     if not request_ids:
         return None, " FL Studio triggered (no pending requests)."
 
     response = _wait_for_response(request_ids, RESPONSE_TIMEOUT)
-    if response is None and run_script_from_menu():
-        # The shortcut re-runs the last script, so it does nothing until the script
-        # has been run from the menu once in this FL session.
-        response = _wait_for_response(request_ids, RESPONSE_TIMEOUT)
+    if response is None and ran_from_menu:
+        close_menus_left_open()
+    if response is None and ran_from_menu and close_script_dialogs():
+        return None, (
+            " Warning: the menu walk reached another piano roll script, whose settings window "
+            "was closed without applying it. The requests stay queued: try again, and keep "
+            "the mouse away from FL Studio's menus while notes are being written."
+        )
     if response is None:
         return None, (
             f" Warning: FL Studio did not respond within {RESPONSE_TIMEOUT}s. Make sure a "
