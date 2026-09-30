@@ -13,6 +13,7 @@ from __future__ import annotations
 import ctypes
 import time
 from ctypes import wintypes
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,10 @@ RENDER_WINDOW_CLASS = "TWAVRenderForm"
 # Windows' standard dialog class: FL's file dialogs (the title depends on the language).
 SYSTEM_DIALOG_CLASS = "#32770"
 PIANO_ROLL_TITLE = "Piano roll"
+PLAYLIST_TITLE = "Playlist"
+EDITOR_PANEL_CLASS = "TEventEditForm"  # the piano roll's and the playlist's window
+# In the playlist: the box above the track headers, left of the time ruler.
+PLAYLIST_CORNER_CLASS = "TWPControl"
 MAIN_MENU_CLASS = "TNewMenu"  # the FILE EDIT ADD ... bar
 # A point inside "FILE", the bar's first entry (pixels from the bar's top-left corner).
 FILE_MENU_OFFSET = (12, 16)
@@ -63,6 +68,8 @@ SCRIPT_DIALOG_CLASS = "TScriptDialog"
 # Seen live: after an entry is chosen FL acts at once, but the menu's window fades
 # out for most of a second. A menu still there after this long is a menu left open.
 MENU_FADE_SECONDS = 1.5
+# The playlist's frame and scroll bar below the last track row that is safe to click.
+PLAYLIST_BOTTOM_MARGIN = 30
 
 # Menus an entry was chosen in, by handle, with the time it was chosen.
 _chosen_menus: dict[int, float] = {}
@@ -137,13 +144,17 @@ def open_menus(user32: Any, kernel32: Any) -> list[int]:
     return [hwnd for hwnd in reversed(handles) if hwnd not in _chosen_menus]
 
 
-def post_key_to_popup_menu(user32: Any, kernel32: Any, virtual_key: int, menus: int) -> bool:
+def post_key_to_popup_menu(
+    user32: Any, kernel32: Any, virtual_key: int, menus: int, chooses: bool = False
+) -> bool:
     """Press a key in FL's innermost open popup menu by posting it to the menu's window.
 
     Seen live: the menu takes it without FL being the active window. Only done
     when FL has exactly `menus` menus open (a submenu counts), so the key can't
     land in a menu other than the expected one. After Enter the menus count as
-    closed: FL has acted, though their windows take a moment to fade.
+    closed: FL has acted, though their windows take a moment to fade. The same
+    goes for an entry's accelerator letter, which chooses it at once: pass
+    `chooses` for those.
     """
     handles = open_menus(user32, kernel32)
     if len(handles) != menus:
@@ -151,7 +162,7 @@ def post_key_to_popup_menu(user32: Any, kernel32: Any, virtual_key: int, menus: 
     menu = wintypes.HWND(handles[-1])
     sent = user32.PostMessageW(menu, _WM_KEYDOWN, virtual_key, 0)
     sent = bool(sent and user32.PostMessageW(menu, _WM_KEYUP, virtual_key, 0))
-    if sent and virtual_key == VK_RETURN:
+    if sent and (chooses or virtual_key == VK_RETURN):
         _chosen_menus.update(dict.fromkeys(handles, time.monotonic()))
     return sent
 
@@ -293,6 +304,64 @@ def click_piano_roll_menu_arrow() -> bool:
     return main is not None and click_panel_menu_arrow(user32, main, PIANO_ROLL_TITLE)
 
 
+@dataclass(frozen=True)
+class PlaylistPanel:
+    """The playlist's window and where its parts are, in the window's own coordinates."""
+
+    hwnd: int
+    header_left: int  # the track headers start here...
+    grid_left: int  # ...and end where the clip area starts
+    grid_top: int
+    grid_bottom: int
+
+
+def playlist_panel() -> PlaylistPanel | None:
+    """The playlist as docked in FL's main window; None if it isn't showing there.
+
+    Seen live: the box above the track headers is a child window of its own. It
+    ends where the clip area begins, to its right and below it.
+    """
+    user32, kernel32 = win_focus._libraries()
+    main = win_focus.find_fl_window(user32, kernel32)
+    if main is None:
+        return None
+    for hwnd in _visible_children(user32, main, EDITOR_PANEL_CLASS):
+        if not win_focus._window_title(user32, hwnd).startswith(PLAYLIST_TITLE):
+            continue
+        corners = _visible_children(user32, hwnd, PLAYLIST_CORNER_CLASS)
+        if len(corners) != 1:
+            return None
+        left, top, _right, bottom = _rect(user32, hwnd)
+        corner = _rect(user32, corners[0])
+        return PlaylistPanel(
+            hwnd=hwnd,
+            header_left=corner[0] - left,
+            grid_left=corner[2] - left,
+            grid_top=corner[3] - top,
+            grid_bottom=bottom - top - PLAYLIST_BOTTOM_MARGIN,
+        )
+    return None
+
+
+def click_in_window(hwnd: int, x: int, y: int) -> bool:
+    """Left-click at a point of one of FL's windows (its own coordinates), by posted message."""
+    return _post_click(win_focus._libraries()[0], hwnd, (x, y))
+
+
+def press_key_in_window(hwnd: int, virtual_key: int) -> bool:
+    """Press a key in one of FL's windows, by posted message."""
+    user32, _ = win_focus._libraries()
+    sent = user32.PostMessageW(wintypes.HWND(hwnd), _WM_KEYDOWN, virtual_key, 0)
+    return bool(sent and user32.PostMessageW(wintypes.HWND(hwnd), _WM_KEYUP, virtual_key, 0))
+
+
+def click_playlist_menu_arrow() -> bool:
+    """Open the playlist's menu. False if no playlist is showing."""
+    user32, kernel32 = win_focus._libraries()
+    main = win_focus.find_fl_window(user32, kernel32)
+    return main is not None and click_panel_menu_arrow(user32, main, PLAYLIST_TITLE)
+
+
 def popup_menu_count() -> int:
     """How many popup menus FL Studio has open right now."""
     return len(open_menus(*win_focus._libraries()))
@@ -353,9 +422,12 @@ def close_popup_menus() -> None:
         user32.PostMessageW(wintypes.HWND(menu), _WM_KEYUP, VK_ESCAPE, 0)
 
 
-def press_in_popup_menu(virtual_key: int, menus: int = 1) -> bool:
-    """Press a key in FL's open popup menu. False unless exactly `menus` menus are open."""
-    return post_key_to_popup_menu(*win_focus._libraries(), virtual_key, menus)
+def press_in_popup_menu(virtual_key: int, menus: int = 1, chooses: bool = False) -> bool:
+    """Press a key in FL's open popup menu. False unless exactly `menus` menus are open.
+
+    `chooses`: the key is an entry's accelerator letter, which closes the menus.
+    """
+    return post_key_to_popup_menu(*win_focus._libraries(), virtual_key, menus, chooses)
 
 
 def press_enter_in_popup_menu() -> bool:

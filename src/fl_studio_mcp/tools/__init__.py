@@ -12,6 +12,7 @@ from fl_studio_mcp.tools.piano_roll import register_piano_roll_tools
 from fl_studio_mcp.tools.plugins import register_plugin_tools
 from fl_studio_mcp.tools.project import register_project_tools
 from fl_studio_mcp.tools.roles import register_roles_tools
+from fl_studio_mcp.tools.screen import register_screen_tools
 from fl_studio_mcp.tools.styles import register_style_tools
 from fl_studio_mcp.tools.transport import register_transport_tools
 from fl_studio_mcp.tools.tuning import register_tuning_tools
@@ -30,6 +31,7 @@ __all__ = [
     "register_project_tools",
     "register_pattern_tools",
     "register_roles_tools",
+    "register_screen_tools",
     "register_style_tools",
     "register_tuning_tools",
 ]

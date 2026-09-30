@@ -60,6 +60,8 @@ READS = {
     "project.getInfo", "patterns.getAll", "patterns.findEmpty", "plugins.isValid",
     "plugins.getName", "plugins.getParamCount", "plugins.getParams", "plugins.getParamValue",
     "plugins.getPresetCount", "plugins.getColor", "plugins.listPresets", "browser.getFocused",
+    "playlist.getState", "playlist.getSelectedTrack", "playlist.getTracks",
+    "playlist.getSongPosition",
 }
 
 

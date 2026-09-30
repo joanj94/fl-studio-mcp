@@ -128,15 +128,21 @@ def register_plugin_tools(mcp: FastMCP) -> None:
         index: int | str,
         slot_index: int = -1,
         use_global_index: bool = True,
-        max_params: int = 50
+        max_params: int = 50,
+        search: str | None = None,
     ) -> list[dict]:
-        """Get all parameters of a plugin with their current values.
+        """Get a plugin's parameters with their current values.
+
+        A plugin can have thousands: without `search` only the first
+        `max_params` come back. Search by name to find the one you need, e.g.
+        "cutoff", "pitch envelope", "attack".
 
         Args:
             index: Channel index (global) or role, or mixer track index
             slot_index: Effect slot index for mixer plugins (-1 for channel rack)
             use_global_index: Whether to use global channel indexing
             max_params: Maximum number of parameters to return (default 50)
+            search: Words that must all be in the parameter's name (any case)
         """
         try:
             index = _plugin_index(index, slot_index)
@@ -148,6 +154,7 @@ def register_plugin_tools(mcp: FastMCP) -> None:
             "slot_index": slot_index,
             "use_global": use_global_index,
             "max_params": max_params,
+            "search": search,
         })
 
         if not result.get("success", False) and "error" in result:

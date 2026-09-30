@@ -30,6 +30,7 @@ import general
 import midi
 import mixer
 import patterns
+import playlist
 import plugins
 import transport
 import ui
@@ -341,6 +342,22 @@ def dispatch_command(action: str, params: dict) -> dict:
     elif action == "plugins.getColor":
         return handle_plugins_get_color(params)
 
+    # Playlist commands
+    elif action == "playlist.getState":
+        return handle_playlist_get_state()
+    elif action == "playlist.scrollTo":
+        return handle_playlist_scroll_to(params)
+    elif action == "playlist.getSelectedTrack":
+        return handle_playlist_get_selected_track(params)
+    elif action == "playlist.deselectTracks":
+        return handle_playlist_deselect_tracks()
+    elif action == "playlist.getSongPosition":
+        return handle_playlist_get_song_position()
+    elif action == "playlist.getTracks":
+        return handle_playlist_get_tracks(params)
+    elif action == "playlist.setTrackName":
+        return handle_playlist_set_track_name(params)
+
     else:
         return {"error": f"Unknown action: {action}"}
 
@@ -390,9 +407,10 @@ def handle_transport_set_position(params: dict) -> dict:
 def handle_transport_get_length() -> dict:
     """Get song length."""
     return {
-        "ticks": transport.getSongLength(3),
-        "seconds": transport.getSongLength(2),
-        "milliseconds": transport.getSongLength(1),
+        "bars": transport.getSongLength(midi.SONGLENGTH_BARS),
+        "ticks": transport.getSongLength(midi.SONGLENGTH_ABSTICKS),
+        "seconds": transport.getSongLength(midi.SONGLENGTH_S),
+        "milliseconds": transport.getSongLength(midi.SONGLENGTH_MS),
     }
 
 
@@ -443,26 +461,34 @@ def handle_mixer_get_track_info(params: dict) -> dict:
 
 
 def handle_mixer_get_all_tracks(params: dict) -> dict:
-    """Get info about all mixer tracks."""
+    """The mixer tracks in use: named, with a channel routed to them, or holding an effect.
+
+    `include_empty` lists every track. Each comes with the channels routed to it.
+    """
     include_empty = params.get("include_empty", False)
+    routed = {}
+    for channel in range(channels.channelCount(True)):
+        track = channels.getTargetFxTrack(channel, True)
+        routed.setdefault(track, []).append(channels.getChannelName(channel, True))
+
     tracks = []
-    track_count = mixer.trackCount()
-
-    for i in range(track_count):
+    for i in range(mixer.trackCount()):
         name = mixer.getTrackName(i)
-
-        # Skip empty tracks if requested
-        if not include_empty and (not name or name.startswith("Insert ")):
-            if i != 0:  # Always include master
-                continue
-
+        named = bool(name) and not name.startswith("Insert ")
+        in_use = named or i in routed or any(
+            plugins.isValid(i, slot, True) for slot in range(MIXER_SLOTS)
+        )
+        if not (include_empty or in_use or i == 0):
+            continue
         tracks.append({
             "index": i,
             "name": name if name else ("Master" if i == 0 else f"Insert {i}"),
             "volume": mixer.getTrackVolume(i),
+            "volume_db": mixer.getTrackVolume(i, 1),
             "pan": mixer.getTrackPan(i),
             "is_muted": mixer.isTrackMuted(i) == 1,
             "is_solo": mixer.isTrackSolo(i) == 1,
+            "channels": routed.get(i, []),
         })
 
     return {"tracks": tracks}
@@ -1152,40 +1178,39 @@ def handle_plugins_get_param_count(params: dict) -> dict:
 
 
 def handle_plugins_get_params(params: dict) -> dict:
-    """Get all plugin parameters."""
+    """A plugin's parameters: the first `max_params`, or those whose name matches `search`.
+
+    `search` is matched word by word, ignoring case ("pitch env" finds "Pitch
+    envelope - Attack time"); unnamed parameters never match.
+    """
     index = params.get("index", 0)
     slot_index = params.get("slot_index", -1)
     use_global = params.get("use_global", True)
     max_params = params.get("max_params", 50)
-
+    words = str(params.get("search") or "").lower().split()
     if slot_index >= 0:
-        param_count = plugins.getParamCount(index, slot_index, True)
-    else:
-        param_count = plugins.getParamCount(index, -1, use_global)
+        use_global = True
 
+    param_count = plugins.getParamCount(index, slot_index, use_global)
     param_list = []
-    for i in range(min(param_count, max_params)):
+    for i in range(param_count if words else min(param_count, max_params)):
         try:
-            if slot_index >= 0:
-                name = plugins.getParamName(i, index, slot_index, True)
-                value = plugins.getParamValue(i, index, slot_index, True)
-                value_str = plugins.getParamValueString(i, index, slot_index, True)
-            else:
-                name = plugins.getParamName(i, index, -1, use_global)
-                value = plugins.getParamValue(i, index, -1, use_global)
-                value_str = plugins.getParamValueString(i, index, -1, use_global)
-
+            name = plugins.getParamName(i, index, slot_index, use_global)
+            if words and not (name and all(word in name.lower() for word in words)):
+                continue
             param_list.append({
                 "index": i,
                 "name": name,
-                "value": value,
-                "value_string": value_str,
+                "value": plugins.getParamValue(i, index, slot_index, use_global),
+                "value_string": plugins.getParamValueString(i, index, slot_index, use_global),
             })
         except Exception as e:
             print(f"Warning: could not read param {i}: {e}")
             continue
+        if len(param_list) >= max_params:
+            break
 
-    return {"params": param_list}
+    return {"params": param_list, "total": param_count}
 
 
 def handle_plugins_get_param_value(params: dict) -> dict:
@@ -1529,3 +1554,84 @@ def handle_project_undo(params: dict) -> dict:
         "history_position": general.getUndoHistoryPos(),
         "history_count": general.getUndoHistoryCount(),
     }
+
+
+# =============================================================================
+# Playlist
+# =============================================================================
+
+# The API can't place or read clips. It can scroll the playlist, name its
+# tracks, tell which track is selected and how long the song is; the server
+# places clips by posting clicks to the playlist's window and checks with these.
+
+
+def _whole(value, low: int, high: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
+
+
+def handle_playlist_get_state() -> dict:
+    """Whether the playlist shows, and the song's length (0 ticks: no clips)."""
+    ticks = transport.getSongLength(midi.SONGLENGTH_ABSTICKS)
+    bar_ticks = general.getRecPPB()
+    return {
+        "visible": bool(ui.getVisible(midi.widPlaylist)),
+        # Seen live: one tick less than where the last clip ends.
+        "length_ticks": ticks + 1 if ticks > 0 else 0,
+        "length_bars": (ticks + 1) / bar_ticks if ticks > 0 else 0,
+        "bar_ticks": bar_ticks,
+        "track_count": playlist.trackCount(),
+    }
+
+
+def handle_playlist_scroll_to(params: dict) -> dict:
+    """Scroll the playlist: `bar` becomes its first bar, `track` comes into view."""
+    bar, track = params.get("bar"), params.get("track")
+    if bar is not None:
+        if not _whole(bar, 1, 100000):
+            return {"error": "bar must be a whole number of 1 or more, got %r" % (bar,)}
+        ui.scrollWindow(midi.widPlaylist, bar, 1)
+    if track is not None:
+        if not _whole(track, 1, playlist.trackCount()):
+            return {"error": "track must be 1-%d, got %r" % (playlist.trackCount(), track)}
+        ui.scrollWindow(midi.widPlaylist, track, 0)
+    return {"bar": bar, "track": track}
+
+
+def handle_playlist_get_selected_track(params: dict) -> dict:
+    """The selected playlist tracks (1-based), looking at tracks 1 to `upto`."""
+    count = playlist.trackCount()
+    upto = params.get("upto", count)
+    if not _whole(upto, 1, 100000):
+        return {"error": "upto must be a whole number of 1 or more, got %r" % (upto,)}
+    return {"selected": [i for i in range(1, min(upto, count) + 1) if playlist.isTrackSelected(i)]}
+
+
+def handle_playlist_deselect_tracks() -> dict:
+    """Deselect every playlist track, so the next header click shows what it selected."""
+    playlist.deselectAll()
+    return {"selected": []}
+
+
+def handle_playlist_get_song_position() -> dict:
+    """The song position in ticks. It never lies beyond the end of the last clip."""
+    return {"ticks": transport.getSongPos(midi.SONGLENGTH_ABSTICKS)}
+
+
+def handle_playlist_get_tracks(params: dict) -> dict:
+    """Names and mute state of the first `count` playlist tracks."""
+    count = params.get("count", 20)
+    if not _whole(count, 1, playlist.trackCount()):
+        return {"error": "count must be 1-%d, got %r" % (playlist.trackCount(), count)}
+    return {"tracks": [
+        {"track": i, "name": playlist.getTrackName(i), "is_muted": bool(playlist.isTrackMuted(i))}
+        for i in range(1, count + 1)
+    ]}
+
+
+def handle_playlist_set_track_name(params: dict) -> dict:
+    """Name a playlist track; an empty name resets it."""
+    track = params.get("track")
+    if not _whole(track, 1, playlist.trackCount()):
+        return {"error": "track must be 1-%d, got %r" % (playlist.trackCount(), track)}
+    playlist.setTrackName(track, str(params.get("name", "")))
+    return {"track": track, "name": playlist.getTrackName(track)}

@@ -101,8 +101,17 @@ def _fl(action: str, params: dict | None = None) -> dict:
     return result
 
 
-def render_stems(indexes: list[int] | None, timeout: float, keep_files: bool) -> dict:
+MASTER_TRACK = 0
+
+
+def render_stems(
+    indexes: list[int] | None, timeout: float, keep_files: bool, master_effects: bool = True
+) -> dict:
     """Render each channel soloed and summarise it; raises RenderError.
+
+    With `master_effects` off, the master track's effects are switched off for
+    the renders and on again afterwards: a limiter there would bring every
+    stem up to the same ceiling and hide how loud each part really is.
 
     Soloing a channel and taking the solo off again leaves every channel
     unmuted, so the channels that were muted are muted again afterwards. A solo
@@ -119,9 +128,18 @@ def render_stems(indexes: list[int] | None, timeout: float, keep_files: bool) ->
         rack[i] for i in indexes
     ]
     muted = [c["index"] for c in rack if c.get("is_muted")]
+    bypassed: list[int] = []
+    if not master_effects:
+        bypassed = [
+            effect["slot"]
+            for effect in _fl("mixer.getTrackEffects", {"track": MASTER_TRACK}).get("effects", [])
+            if effect.get("enabled")
+        ]
     stems: list[dict] = []
     soloed: int | None = None
     try:
+        for slot in bypassed:
+            _fl("mixer.setEffect", {"track": MASTER_TRACK, "slot": slot, "enabled": False})
         for channel in wanted:
             soloed = channel["index"]
             _fl("channels.solo", {"index": soloed, "solo": True})
@@ -142,10 +160,14 @@ def render_stems(indexes: list[int] | None, timeout: float, keep_files: bool) ->
         problems.extend(
             _put_back("channels.mute", {"index": index, "muted": True}) for index in muted
         )
+        problems.extend(
+            _put_back("mixer.setEffect", {"track": MASTER_TRACK, "slot": slot, "enabled": True})
+            for slot in bypassed
+        )
     result: dict = {"stems": stems}
     if any(problems):
         result["warning"] = (
-            "The channels' mute and solo states could not all be put back: "
+            "Mute and solo states or the master's effects could not all be put back: "
             + "; ".join(problem for problem in problems if problem)
         )
     return result
@@ -202,19 +224,26 @@ def register_audio_tools(mcp: FastMCP) -> None:
         channels: list[int | str] | None = None,
         keep_files: bool = False,
         timeout: float = DEFAULT_RENDER_TIMEOUT,
+        master_effects: bool = True,
     ) -> dict:
         """Render each channel on its own and measure it, to see what every part adds to the mix.
 
         Each channel is soloed and rendered like fl_render (pattern or song, per
-        FL's mode), so it is heard through its mixer track and the master's
-        effects. Use it to balance levels: compare the stems' loudness and
-        where their energy sits, change channel or mixer volumes, and render
-        again. Takes about as long as one fl_render per channel. Windows only.
+        FL's mode), so it is heard through its mixer track and the master. Use
+        it to balance levels: compare the stems' loudness and where their
+        energy sits, change channel or mixer volumes, and render again. Takes
+        about as long as one fl_render per channel. Windows only.
 
         Args:
             channels: Channel indexes or roles to render. Default: every channel
                 that isn't muted.
             keep_files: Keep the stem WAVs and return their paths.
+            master_effects: False switches the master track's effects off for
+                these renders (and on again after). Do that to balance levels
+                when the master has a limiter or maximizer: through it every
+                loud stem peaks at the same ceiling and the numbers tell
+                nothing. A stem peaking above 0 dBFS then is too hot by that
+                much.
             timeout: Seconds to wait for each render.
 
         Returns {"mode", "stems": [{"index", "name", "silent", "loudness_lufs",
@@ -233,7 +262,7 @@ def register_audio_tools(mcp: FastMCP) -> None:
         try:
             with keyboard_lock:
                 mode = _fl("transport.getStatus").get("loop_mode")
-                result = render_stems(indexes, timeout, keep_files)
+                result = render_stems(indexes, timeout, keep_files, master_effects)
         except RenderError as e:
             return {"error": str(e)}
         return {"mode": mode, **result}

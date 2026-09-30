@@ -83,12 +83,21 @@ def _pitched_frames(mono: np.ndarray, rate: int) -> tuple[np.ndarray, int]:
     return np.array(pitches), len(sounding)
 
 
+def _most_common(notes: np.ndarray) -> int:
+    values, counts = np.unique(notes, return_counts=True)
+    return int(values[np.argmax(counts)])
+
+
 def estimate_pitch(mono: np.ndarray, rate: int) -> dict | None:
     """The note a sound plays most of the time; None if it has no clear pitch.
 
     "cents" is how far that note is played from equal temperament (A4 = 440 Hz),
-    "share" the part of the pitched time spent on it, "voiced" the part of the
-    sounding time that is pitched at all, and "notes" the most played notes.
+    "share" the part of the pitched time spent on it, "class_share" the part
+    spent on that note in any octave (a sound with several oscillators is
+    heard in several), "ends_on" the note held in the last quarter of the
+    sound (it differs from "note" for a pitch that glides), "voiced" the part
+    of the sounding time that is pitched at all, and "notes" the most played
+    notes.
     """
     pitches, sounding = _pitched_frames(mono, rate)
     if not len(pitches):
@@ -104,6 +113,8 @@ def estimate_pitch(mono: np.ndarray, rate: int) -> dict | None:
         "hz": round(A4_HZ * 2 ** ((played - A4_MIDI) / SEMITONES), 2),
         "cents": int(round((played - note) * 100)),
         "share": round(float(counts[order[0]]) / len(pitches), 2),
+        "class_share": round(float(np.mean((nearest - note) % SEMITONES == 0)), 2),
+        "ends_on": pitch_name(_most_common(nearest[-max(1, len(nearest) // 4):])),
         "voiced": round(len(pitches) / sounding, 2),
         "notes": [
             {"note": pitch_name(int(notes[i])), "share": round(float(counts[i]) / len(pitches), 2)}

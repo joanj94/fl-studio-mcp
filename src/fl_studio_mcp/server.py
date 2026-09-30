@@ -12,8 +12,8 @@ Requirements:
 - For piano roll: ComposeWithLLM.pyscript installed in FL Studio
 
 Limitations:
-- Cannot load new plugins (only control existing ones)
-- Cannot place pattern clips in the playlist or create automation
+- Loading sounds, placing playlist clips and rendering work on Windows only
+- Cannot create automation
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from fl_studio_mcp.tools import (
     register_plugin_tools,
     register_project_tools,
     register_roles_tools,
+    register_screen_tools,
     register_style_tools,
     register_transport_tools,
     register_tuning_tools,
@@ -63,7 +64,8 @@ Available tool categories:
 - Mixer: Volume, pan, mute, solo, track management
 - Channels: Channel info, note triggering, step sequencer incl. per-step pitch,
   velocity and pan (fl_set_step_params)
-- Sounds (Windows): fl_browser_list shows what FL's browser holds (stock "Packs",
+- Sounds (Windows): fl_browser_search finds samples and presets by name
+  ("kick 909", "sytrus pad"); fl_browser_list shows what FL's browser holds (stock "Packs",
   the user's own sample folders, "Channel presets", "Plugin presets", "Plugin
   database"). fl_load_in_new_channel makes a channel from a sample, preset or
   plugin; fl_load_in_channel replaces a channel's sound; fl_add_effect puts an
@@ -73,8 +75,13 @@ Available tool categories:
 - Piano roll: Write, delete and read persistent notes (fl_send_notes, ...). Pass
   channel/pattern to aim at a roll; notes may carry pan, slide, porta, fine_pitch
   (cents) and more.
-- Arrangement and feedback: fl_arrange builds a song from patterns (sections of
-  looped patterns written into one long pattern; play it in pattern mode).
+- Song: write every part as its own pattern (kick, tops, lead riff, chords...),
+  then fl_arrange lays them out in the playlist: sections of patterns playing
+  together, one playlist track per pattern, FL in song mode. Don't write a
+  whole song into one pattern. fl_get_playlist and fl_screenshot("playlist")
+  show the result.
+- Feedback: fl_screenshot shows FL's window (clips, message boxes, anything
+  the other tools can't tell).
   fl_render renders what FL would play to a WAV and returns measurements
   (loudness, peaks, frequency balance, stereo image, key, loudness over time);
   audio_analyze measures any WAV. fl_render_stems renders each channel on its
@@ -93,8 +100,9 @@ Important limitations:
 1. Loading sounds and rendering work on Windows only; loading only for what FL's
    browser shows.
    Channels and effects can't be deleted, only undone right away (fl_undo).
-2. Cannot place pattern clips in the playlist or create automation. To build a
-   song, fl_arrange writes sections of looped patterns into one long pattern.
+2. Playlist clips are placed by fl_arrange only (whole patterns on bar lines,
+   the whole playlist at once); single clips can't be moved or read, and
+   automation can't be created.
 3. Note triggering (fl_trigger_note) is real-time only - notes won't persist
    unless FL Studio is recording. Use step sequencer (fl_set_grid_bit) for
    persistent drum patterns.
@@ -198,6 +206,7 @@ register_pattern_tools(mcp)
 register_roles_tools(mcp)
 register_style_tools(mcp)
 register_tuning_tools(mcp)
+register_screen_tools(mcp)
 
 
 def main():

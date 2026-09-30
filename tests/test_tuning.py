@@ -107,15 +107,15 @@ def test_a_channel_that_plays_what_it_is_given_is_in_tune(tools, project, monkey
 
 
 def test_a_sample_with_its_own_pitch_tells_how_to_write_its_notes(tools, project, monkeypatch):
-    # A sampler: C5 (72) plays the sample as recorded, here at F1 (29).
-    _channel_sounds(monkeypatch, project, lambda midi: _tone(midi - 72 + 29))
+    # A sampler: MIDI 60 plays the sample as recorded, here at F1 (29).
+    _channel_sounds(monkeypatch, project, lambda midi: _tone(midi - 60 + 29))
 
     result = tools["fl_measure_pitch"]("kick", key_root="G")
 
-    assert result["heard"]["note"] == "F1"
-    assert result["offset_semitones"] == -43
+    assert result["sent"] == "C4" and result["heard"]["note"] == "F1"
+    assert result["offset_semitones"] == -31
     assert result["transpose_to_correct"] == -5  # F is 5 above C: write 5 lower
-    assert result["note_for_root"] == "D5"  # two semitones up turns the F into a G
+    assert result["note_for_root"] == "D4"  # two semitones up turns the F into a G
     assert "-5 semitones" in result["summary"]
 
 
@@ -159,6 +159,27 @@ def test_a_sound_that_wanders_is_reported_as_unsteady(tools, project, monkeypatc
     assert "transpose_to_correct" not in result
 
 
+def test_a_sound_in_several_octaves_is_steady(tools, project, monkeypatch):
+    # Oscillators an octave apart, each loudest for a while: one pitch class throughout.
+    octaves = np.concatenate([_tone(60, 0.5), _tone(72, 0.4), _tone(48, 0.4)])
+    _channel_sounds(monkeypatch, project, lambda midi: octaves)
+
+    result = tools["fl_measure_pitch"](1)
+
+    assert result["summary"].startswith("In tune")
+
+
+def test_a_pitch_that_glides_into_its_note_is_explained(tools, project, monkeypatch):
+    glide = np.concatenate([_tone(60 + step, 0.25) for step in (5, 4, 3, 2, 1)] + [_tone(60, 0.5)])
+    _channel_sounds(monkeypatch, project, lambda midi: glide)
+
+    result = tools["fl_measure_pitch"](1)
+
+    assert result["heard"]["ends_on"] == "C4"
+    assert "The pitch glides" in result["summary"]
+    assert "transpose_to_correct" not in result
+
+
 def test_the_project_is_left_as_it_was(tools, project, monkeypatch):
     project.mode = "song"
     _channel_sounds(monkeypatch, project, _tone)
@@ -198,7 +219,7 @@ def test_what_could_not_be_put_back_is_reported(tools, project, monkeypatch):
 
     result = tools["fl_measure_pitch"](1)
 
-    assert result["heard"]["note"] == "C5"
+    assert result["heard"]["note"] == "C4"
     assert "pattern 3 is still selected" in result["warning"]
 
 
@@ -213,3 +234,13 @@ def test_bad_arguments_are_refused_before_fl_is_touched(tools, project, kwargs, 
 
     assert message in result["error"]
     assert not any(action.startswith(("patterns.", "transport.")) for action in project.sent)
+
+
+def test_a_lost_connection_while_writing_the_note_is_an_error(tools, project, monkeypatch):
+    def write_notes(notes, channel, pattern):
+        raise RuntimeError("MIDI port closed")
+
+    monkeypatch.setattr(tuning, "write_notes", write_notes)
+
+    assert tools["fl_measure_pitch"](1) == {"error": "MIDI port closed"}
+    assert project.pattern == 2  # the clean-up after it still ran

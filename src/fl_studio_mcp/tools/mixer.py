@@ -54,11 +54,15 @@ def register_mixer_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def fl_get_all_mixer_tracks(include_empty: bool = False) -> list[dict]:
-        """Get information about all mixer tracks.
+        """Get the mixer tracks in use, each with its level and the channels routed to it.
+
+        A track is in use when it has a name of its own, a channel routed to it
+        or an effect on it. Each entry: index, name, volume (fader position),
+        volume_db, pan, is_muted, is_solo, channels (names routed to it; track 0,
+        the master, lists the channels that aren't routed anywhere else).
 
         Args:
-            include_empty: If False, only returns tracks with non-default names.
-                          If True, returns all 125 tracks.
+            include_empty: Also list the tracks nothing uses.
         """
         conn = get_connection()
         result = conn.send_command("mixer.getAllTracks", {"include_empty": include_empty})

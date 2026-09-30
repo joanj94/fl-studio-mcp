@@ -104,7 +104,7 @@ Compared with upstream, this fork currently adds:
 - **FL Studio 2026 support:** the FL-side scripts no longer use `os.replace`, which breaks FL 2026's embedded Python.
 - **More FL control:** tempo, project overview, patterns, per-step parameters, and piano roll notes aimed at a chosen channel and pattern with full note properties.
 - **Things the API can't do (Windows):** loading samples, presets, instrument plugins and effects from FL's browser, and running the piano roll script, all without FL Studio coming to the front: the browser is driven through the API, and the few clicks and keys needed are posted to FL's own menus. Rendering to WAV goes through FL's own export dialog the same way. Every step is checked (the expected menu, dialog or window must be open) before the next one.
-- **Arrangement and feedback:** `fl_arrange` builds a song from patterns, and `fl_render` / `audio_analyze` measure the result (loudness, peaks, frequency balance, stereo image, key).
+- **Arrangement and feedback:** `fl_arrange` lays a song out in the playlist (one playlist track per pattern, clips placed section by section), `fl_render` / `audio_analyze` measure the result (loudness, peaks, frequency balance, stereo image, key), and `fl_screenshot` shows FL's window.
 - **Test suite:** pytest with the FL Studio API faked, so it runs without FL Studio. It includes a contract test that checks every tool against the FL-side controller script.
 
 ## Roadmap
@@ -121,7 +121,7 @@ Compared with upstream, this fork currently adds:
 These come from FL Studio's scripting API, not from this server:
 
 - **The API can't load anything or create channels.** On Windows the server does it through FL's browser instead (`fl_load_in_new_channel`, `fl_load_in_channel`, `fl_add_effect`, `fl_add_channel`): it moves the browser's cursor to the file and picks "Open in new channel" or "Send to selected channel" from the file's menu. That covers everything the browser shows, which excludes sounds that live inside a plugin's own preset browser (third-party synths, FLEX packs other than the loaded one). Channels and effects can't be deleted, only undone (`fl_undo`). On macOS none of this works: start from a template project that has the instruments you want.
-- **Cannot place pattern clips in the playlist or create automation.** Patterns can be created (by selecting an unused number) and filled. To get a full song without the playlist, `fl_arrange` copies looped patterns, section by section, into one long pattern that plays in pattern mode; arranging clips in the playlist itself is up to you.
+- **Playlist clips are placed by `fl_arrange` only** (whole patterns on bar lines, the whole playlist at once, Windows); single clips can't be moved or read. **Automation can't be created.**
 - **Loading and rendering are Windows-only, and you will see FL's menus and dialogs flash.** They never take the keyboard, the mouse or the focus, so you can keep working in another program. The loading tools close FL's open plugin windows (FL would otherwise load into the plugin whose window is open), leave the browser's folders closed, and un-minimize FL Studio if it is minimized (behind your other windows, without focus).
 - **Time signature is read-only.** The overview reports it; set it in FL Studio yourself.
 - **Real-time notes aren't saved.** `fl_trigger_note` plays a note live; it only ends up in the project if FL Studio is recording. Use the piano roll or step sequencer tools to write notes permanently.
@@ -441,6 +441,7 @@ A channel's plugin can be addressed by role (`"lead"`) as well as by channel ind
 
 | Tool | Description |
 |------|-------------|
+| `fl_browser_search` | Find samples and presets by name in the folders FL's browser takes from disk ("kick 909", "sytrus pad"); returns paths the loading tools take |
 | `fl_browser_list` | List a folder of FL's browser (`"Packs/Drums/Kicks"`, `"Plugin database/Effects"`, ...) |
 | `fl_load_in_new_channel` | New channel from a sample, an instrument preset or a plugin, optionally named |
 | `fl_load_in_channel` | Replace a channel's sample or preset, keeping its name |
@@ -469,9 +470,12 @@ These five take optional `channel` (an index or a role) and `pattern`. Notes can
 
 | Tool | Description |
 |------|-------------|
-| `fl_arrange` | Build a song in one long pattern: sections back to back, each looping the patterns listed for it. Re-run it after editing the source patterns |
+| `fl_arrange` | Build the song in the playlist: sections back to back, each pattern on its own playlist track, repeated to fill its sections. FL ends in song mode (Windows) |
+| `fl_get_playlist` | Song length and the names of the first playlist tracks |
+| `fl_arrange_in_pattern` | The older way: the song written as notes into one long pattern (works without the playlist) |
+| `fl_screenshot` | A picture of FL's window or one panel (playlist, piano roll, channel rack, mixer, browser), taken in the background (Windows) |
 | `fl_render` | Render what FL would play (pattern or song mode) to a WAV through FL's export dialog, and measure it (Windows) |
-| `fl_render_stems` | Render each channel soloed and summarise it (loudness, peak, clipping, energy per band), to balance the mix (Windows) |
+| `fl_render_stems` | Render each channel soloed and summarise it (loudness, peak, clipping, energy per band, pitch), to balance the mix; `master_effects=false` takes the master's limiter out of the measurement (Windows) |
 | `fl_measure_pitch` | Play one note on a channel alone and report the pitch that comes out, and how to transpose its notes so it is in tune with the song (Windows) |
 | `audio_analyze` | Measure any WAV: loudness (LUFS, ITU-R BS.1770), peak, RMS, crest factor, clipping, silence, energy per frequency band, stereo correlation and width, estimated key, the note played most (pitch), loudness over time |
 

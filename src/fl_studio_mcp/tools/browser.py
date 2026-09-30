@@ -12,10 +12,11 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from fl_studio_mcp.utils import fl_browser, fl_windows
+from fl_studio_mcp.utils import browser_index, fl_browser, fl_windows
 from fl_studio_mcp.utils.connection import call
 from fl_studio_mcp.utils.fl_browser import BrowserError
 from fl_studio_mcp.utils.fl_trigger import keyboard_lock
+from fl_studio_mcp.utils.paths import get_fl_settings_dir
 from fl_studio_mcp.utils.roles import resolve_channel
 
 if TYPE_CHECKING:
@@ -338,6 +339,45 @@ def register_browser_tools(mcp: FastMCP) -> None:
             return {"error": str(e)}
         return {"path": "/".join(fl_browser.split_path(path)),
                 "items": [item.to_dict() for item in items]}
+
+    @mcp.tool()
+    def fl_browser_search(query: str, folder: str = "", limit: int = 40) -> dict:
+        """Find sounds by name in FL Studio's browser: samples and presets, in any folder.
+
+        Much faster than listing folders one by one. Searches the folders the
+        browser takes from disk: FL's own ("Packs", "Plugin presets", "Channel
+        presets", "Plugin database", ...) and the user's presets and project
+        bones. Doesn't touch FL Studio. A folder the user added to the browser
+        from elsewhere isn't covered: list it with fl_browser_list.
+
+        Args:
+            query: Words that must all be in the path, any case and order:
+                "kick 909", "sytrus pad dark", "riser noise".
+            folder: Only search below this browser folder, e.g. "Packs/Drums".
+            limit: How many paths to return at most.
+
+        Returns {"matches": [browser paths, best first], "total"} or {"error"}.
+        The paths go straight into fl_load_in_new_channel, fl_load_in_channel
+        and fl_add_effect.
+        """
+        if isinstance(limit, bool) or not 1 <= limit <= browser_index.MAX_LIMIT:
+            return {"error": f"limit must be 1-{browser_index.MAX_LIMIT}, got {limit!r}"}
+        try:
+            install_dir = fl_windows.fl_install_dir()
+        except Exception:  # not on Windows, or FL isn't running: the user's folders remain
+            install_dir = None
+        try:
+            roots = browser_index.browser_roots(install_dir, get_fl_settings_dir().parent)
+            matches, total = browser_index.search(roots, query, folder, limit)
+        except (ValueError, OSError) as e:
+            return {"error": str(e)}
+        result: dict = {"matches": matches, "total": total}
+        if install_dir is None:
+            result["warning"] = (
+                "FL Studio's own folders were not searched: it must be running (on "
+                "Windows) for its install folder to be found."
+            )
+        return result
 
     @mcp.tool()
     def fl_load_in_new_channel(path: str, name: str | None = None) -> dict:

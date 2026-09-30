@@ -97,3 +97,20 @@ def test_semitones_between_is_the_shortest_way_from_one_note_to_a_pitch_class():
     assert pitch.semitones_to_pitch_class(29, 5) == 0
     assert pitch.semitones_to_pitch_class(24, 5) == 5    # C up to F
     assert pitch.semitones_to_pitch_class(35, 5) == -6   # a tritone goes down
+
+
+def test_octaves_of_one_note_share_a_pitch_class():
+    octaves = np.concatenate([tone(hz_of(60), 0.5), tone(hz_of(72), 0.5)])
+
+    found = pitch.estimate_pitch(octaves, RATE)
+
+    assert found["share"] < 0.6
+    assert found["class_share"] >= 0.95
+
+
+def test_the_note_a_glide_ends_on_is_told():
+    glide = np.concatenate([tone(hz_of(64), 0.6), tone(hz_of(62), 0.6), tone(hz_of(60), 0.5)])
+
+    found = pitch.estimate_pitch(glide, RATE)
+
+    assert found["ends_on"] == "C4"

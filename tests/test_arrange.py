@@ -1,4 +1,4 @@
-"""Arranging patterns into one long pattern: the layout maths and the fl_arrange tool."""
+"""Arranging patterns into one long pattern: the layout maths and the fl_arrange_in_pattern tool."""
 
 from __future__ import annotations
 
@@ -152,7 +152,7 @@ def rolls(monkeypatch) -> FakeRolls:
 def fl_arrange(fl, rolls) -> Any:
     collector = ToolCollector()
     register_arrange_tools(collector)
-    return collector.tools["fl_arrange"]
+    return collector.tools["fl_arrange_in_pattern"]
 
 
 SONG = [

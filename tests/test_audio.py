@@ -553,6 +553,7 @@ class Rack:
         self.soloed: int | None = None
         self.sent: list[tuple[str, dict]] = []
         self.fail: str | None = None
+        self.master_effects = {0: False, 3: True, 9: True}  # slot: switched on
 
     def send_command(self, action: str, params: dict | None = None, timeout: float = 2.0):
         params = params or {}
@@ -560,6 +561,12 @@ class Rack:
         if action == self.fail:
             raise RuntimeError("MIDI port closed")
         result: dict = {}
+        if action == "mixer.getTrackEffects":
+            result = {"effects": [{"slot": slot, "enabled": on}
+                                  for slot, on in self.master_effects.items()]}
+        elif action == "mixer.setEffect":
+            assert params["track"] == 0
+            self.master_effects[params["slot"]] = params["enabled"]
         if action == "channels.getAll":
             result = {"channels": [
                 {"index": i, "name": name, "is_muted": i in self.muted}
@@ -617,6 +624,39 @@ def test_stems_leave_mutes_and_solos_as_they_were(tools, rack, monkeypatch):
 
     assert "warning" not in tools["fl_render_stems"]()
     assert rack.soloed is None and rack.muted == {1}
+
+
+def test_stems_can_be_rendered_without_the_masters_effects(tools, rack, monkeypatch):
+    during: list[dict] = []
+
+    def render(path: Path, timeout: float) -> float:
+        during.append(dict(rack.master_effects))
+        write_wav(path, stereo(sine(440, 1.0, -6)), RATE, 1, 16)
+        return 0.5
+
+    monkeypatch.setattr(audio_tools, "render_wav", render)
+
+    assert "warning" not in tools["fl_render_stems"](master_effects=False)
+    assert during == [{0: False, 3: False, 9: False}] * 2
+    assert rack.master_effects == {0: False, 3: True, 9: True}  # as they were
+
+
+def test_the_masters_effects_come_back_after_a_failed_render(tools, rack, monkeypatch):
+    def render(path: Path, timeout: float) -> float:
+        raise audio_tools.RenderError("FL Studio is showing a dialog")
+
+    monkeypatch.setattr(audio_tools, "render_wav", render)
+
+    assert "error" in tools["fl_render_stems"](master_effects=False)
+    assert rack.master_effects == {0: False, 3: True, 9: True}
+
+
+def test_the_masters_effects_are_left_alone_by_default(tools, rack, monkeypatch):
+    _each_stem_sounds(monkeypatch, rack, {0: -6, 2: -6})
+
+    tools["fl_render_stems"]()
+
+    assert "mixer.setEffect" not in [action for action, _ in rack.sent]
 
 
 def test_stems_can_be_limited_to_roles_and_kept(tools, rack, monkeypatch):
