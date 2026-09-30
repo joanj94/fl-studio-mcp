@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 WINDOW_TIMEOUT = 5.0  # seconds for a menu or dialog to open
 POLL_INTERVAL = 0.05
+MENU_CLICKS = 3
+MENU_CLICK_TIMEOUT = 0.5  # seconds the File menu gets to open after a click
 SUBMENU_TIMEOUT = 1.0  # seconds for Right to open a submenu or move on to the next menu
 # End goes to the File menu's last entry, Exit; above it are Revert to last backup,
 # the recent projects (none until the project has been saved; seen live: one entry
@@ -93,7 +95,14 @@ def _opens_submenu(ups: int) -> bool:
     one menu open, but another one, which is how the miss is seen at once. The menu
     is then closed.
     """
-    if not fl_windows.click_main_menu() or not _wait_for_menus(1):
+    # Seen live: after a menu opened from the bar was closed, the next click on FILE
+    # sometimes opens nothing; the one after it does.
+    for _ in range(MENU_CLICKS):
+        if not fl_windows.click_main_menu():
+            raise RenderError("FL Studio's File menu did not open")
+        if _wait_until(lambda: fl_windows.popup_menu_count() == 1, MENU_CLICK_TIMEOUT):
+            break
+    else:
         raise RenderError("FL Studio's File menu did not open")
     file_menu = fl_windows.popup_menu_rects()
     for key in [fl_windows.VK_END] + [fl_windows.VK_UP] * ups + [fl_windows.VK_RIGHT]:
