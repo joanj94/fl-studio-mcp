@@ -111,3 +111,36 @@ def register_channel_setup_tools(mcp: FastMCP) -> None:
             logger.exception("Deleting channels failed")
             return {"error": f"Could not delete the channels: {e}"}
         return {"deleted": [names[index] for index in indexes], "remaining": remaining}
+
+    @mcp.tool()
+    def fl_set_cut_itself(channel: int | str, enabled: bool = True) -> dict:
+        """Make a channel's new note cut the ones still sounding ("Cut itself"), or not.
+
+        Without it a sample plays to its end whatever the note's length, so a
+        sample longer than the time between two hits piles up on itself: a kick
+        with a long tail gets louder and muddier hit after hit (seen in a stem
+        as a level that rises over the first beats). With it the channel plays
+        one voice at a time. FL sets it for some samples and not for others, so
+        check the channels that play long samples fast.
+
+        The channel rack must be showing with the channel in view; FL Studio
+        needn't be in front. Windows only.
+
+        Args:
+            channel: Channel index (global, 0-based) or a role.
+            enabled: True to switch it on, False to switch it off.
+
+        Returns {"channel", "name", "cut_itself", "changed"} ("changed" is False
+        if it already was that way) or {"error": ...}.
+        """
+        try:
+            index = resolve_channel(channel)
+            with keyboard_lock:
+                changed = fl_channel_rack.set_cut_itself(index, enabled)
+                name = call("channels.getAll")["channels"][index]["name"]
+        except (ValueError, ChannelRackError) as e:
+            return {"error": str(e)}
+        except Exception as e:
+            logger.exception("Setting cut itself failed")
+            return {"error": f"Could not set \"Cut itself\": {e}"}
+        return {"channel": index, "name": name, "cut_itself": enabled, "changed": changed}

@@ -272,12 +272,16 @@ class FakeExport:
         self.pointer_on_menu = False
         self.message: str | None = None
         self.submenu_top = 259  # seen live: the File menu spans 36-334, Export opens at 259
+        self.recent_projects = 0  # listed between Export and Revert once the project is saved
+        self.ups = 0
+        self.in_edit_menu = False
 
     def open_message(self) -> str | None:
         return self.message
 
     def popup_menu_rects(self) -> list:
-        menus = [(4, 36, 216, 334), (214, self.submenu_top, 393, self.submenu_top + 358)]
+        first = (52, 36, 260, 300) if self.in_edit_menu else (4, 36, 216, 334)
+        menus = [first, (214, self.submenu_top, 393, self.submenu_top + 358)]
         return menus[:self.menus]
 
     def pointer_over_menu(self) -> bool:
@@ -290,14 +294,23 @@ class FakeExport:
     def click_main_menu(self) -> bool:
         self.events.append("file menu")
         self.menus = int(self.opens_file_menu and not self.minimized)
+        self.in_edit_menu = False
         return True
 
     def press_in_popup_menu(self, key: int, menus: int = 1) -> bool:
         if self.menus != menus:
             return False
         self.events.append(key)
-        if key == RIGHT and self.has_export_submenu:
-            self.menus = 2
+        if key == END:
+            self.ups = 0
+        elif key == UP and menus == 1:
+            self.ups += 1
+        elif key == RIGHT:
+            # Exit, Revert and the recent projects have no submenu: Right goes on to EDIT.
+            if self.has_export_submenu and self.ups == 2 + self.recent_projects:
+                self.menus = 2
+            else:
+                self.in_edit_menu = True
         elif key == ENTER:
             self.menus = 0
             self.windows[DIALOG] = int(self.opens_dialog)
@@ -349,11 +362,22 @@ def export(monkeypatch, tmp_path) -> FakeExport:
 def test_render_walks_the_export_dialogs_and_waits_for_the_file(export):
     seconds = fl_render.render_audio(export.target, timeout=0.0)
 
-    # End is Exit; above it Revert, then Export. Right opens its submenu, whose first
-    # entry (Home) is the wave file.
-    assert export.events == ["file menu", END, UP, UP, RIGHT, HOME, ENTER,
+    # End is Exit; above it Revert (no submenu: the menu is opened again), then Export.
+    # Right opens its submenu, whose first entry (Home) is the wave file.
+    assert export.events == ["file menu", END, UP, RIGHT,
+                             "file menu", END, UP, UP, RIGHT, HOME, ENTER,
                              f"save as {export.target}", f"{RENDER_WINDOW} {ENTER}"]
     assert seconds >= 0
+    assert export.target.exists()
+
+
+def test_export_is_found_above_the_recent_projects(export):
+    export.recent_projects = 3
+
+    fl_render.render_audio(export.target, timeout=0.0)
+
+    assert export.events.count("file menu") == 5
+    assert export.events[-7:-2] == [UP, UP, RIGHT, HOME, ENTER]
     assert export.target.exists()
 
 
@@ -362,7 +386,7 @@ def test_an_mp3_path_chooses_the_export_menus_second_entry(export, tmp_path):
 
     fl_render.render_audio(export.target, timeout=0.0)
 
-    assert export.events[:8] == ["file menu", END, UP, UP, RIGHT, HOME, DOWN, ENTER]
+    assert export.events[-5:-2] == [HOME, DOWN, ENTER]
     assert export.target.exists()
 
 
@@ -409,7 +433,7 @@ def test_render_needs_the_output_folder(export, tmp_path):
 
 @pytest.mark.parametrize(("setting", "reason"), [
     ("opens_file_menu", "File menu did not open"),
-    ("has_export_submenu", "Export submenu was not where it was expected"),
+    ("has_export_submenu", "Export submenu was not found"),
     ("opens_dialog", "export dialog did not open"),
     ("opens_render_window", "render window did not open"),
 ])

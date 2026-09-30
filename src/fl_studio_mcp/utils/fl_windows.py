@@ -27,6 +27,7 @@ SYSTEM_DIALOG_CLASS = "#32770"
 PIANO_ROLL_TITLE = "Piano roll"
 PLAYLIST_TITLE = "Playlist"
 CHANNEL_RACK_TITLE = "Channel rack"
+CHANNEL_LIST_CLASS = "TVectorPanel"  # the rack's list of channels (and some of its bars)
 EDITOR_PANEL_CLASS = "TEventEditForm"  # the piano roll's and the playlist's window
 # In the playlist: the box above the track headers, left of the time ruler.
 PLAYLIST_CORNER_CLASS = "TWPControl"
@@ -42,6 +43,9 @@ _WM_KEYUP = 0x0101
 _WM_LBUTTONDOWN = 0x0201
 _WM_LBUTTONUP = 0x0202
 _MK_LBUTTON = 0x0001
+_WM_RBUTTONDOWN = 0x0204
+_WM_RBUTTONUP = 0x0205
+_MK_RBUTTON = 0x0002
 _WM_CLOSE = 0x0010
 _WM_SETTEXT = 0x000C
 _WM_COMMAND = 0x0111
@@ -389,6 +393,38 @@ def click_channel_rack_menu_arrow() -> bool:
     user32, kernel32 = win_focus._libraries()
     main = win_focus.find_fl_window(user32, kernel32)
     return main is not None and click_panel_menu_arrow(user32, main, CHANNEL_RACK_TITLE)
+
+
+def channel_list_panel() -> tuple[int, int] | None:
+    """Handle and height of the channel rack's list of channels; None if no rack is showing.
+
+    Seen live: the rack's form has several `TVectorPanel` children; the list with
+    the channel buttons and steps is the largest one showing.
+    """
+    user32, kernel32 = win_focus._libraries()
+    main = win_focus.find_fl_window(user32, kernel32)
+    found = None if main is None else panel_caption(user32, main, CHANNEL_RACK_TITLE)
+    if found is None:
+        return None
+    rack = user32.GetParent(wintypes.HWND(found[0]))
+    panels = [
+        (bottom - top, right - left, hwnd)
+        for hwnd in _visible_children(user32, rack, CHANNEL_LIST_CLASS)
+        for left, top, right, bottom in [_rect(user32, hwnd)]
+    ]
+    if not panels:
+        return None
+    height, _width, hwnd = max(panels, key=lambda panel: panel[0] * panel[1])
+    return hwnd, height
+
+
+def right_click_in_window(hwnd: int, x: int, y: int) -> bool:
+    """Right-click at a point of one of FL's windows (its own coordinates), by posted message."""
+    user32, _ = win_focus._libraries()
+    target = wintypes.HWND(hwnd)
+    position = (y << 16) | x
+    sent = user32.PostMessageW(target, _WM_RBUTTONDOWN, _MK_RBUTTON, position)
+    return bool(sent and user32.PostMessageW(target, _WM_RBUTTONUP, 0, position))
 
 
 def popup_menu_count() -> int:
