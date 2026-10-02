@@ -357,6 +357,8 @@ def dispatch_command(action: str, params: dict) -> dict:
         return handle_playlist_get_tracks(params)
     elif action == "playlist.setTrackName":
         return handle_playlist_set_track_name(params)
+    elif action == "playlist.setTrackMuted":
+        return handle_playlist_set_track_muted(params)
 
     else:
         return {"error": f"Unknown action: {action}"}
@@ -515,6 +517,11 @@ def handle_mixer_set_track_volume_db(params: dict) -> dict:
 
     FL takes the fader's position (0-1, 0.8 is 0 dB) and tells the dB it gives,
     but not the other way round, so the position is found by halving.
+
+    Seen live: the master's reading only follows a move after the command has
+    returned (it answered 0 dB at every step, and the search left it at silence),
+    while an insert's follows at once. All faders share one law, so the master's
+    position is found on the first insert, which is put back.
     """
     track = params.get("track")
     db = params.get("db")
@@ -525,25 +532,30 @@ def handle_mixer_set_track_volume_db(params: dict) -> dict:
             MIN_TRACK_DB <= db <= MAX_TRACK_DB):
         return {"error": "db must be a number from %g to %g" % (MIN_TRACK_DB, MAX_TRACK_DB)}
 
-    before = mixer.getTrackVolume(track)
+    probe = track if track != 0 else 1
+    before = mixer.getTrackVolume(probe)
     low, high = 0.0, 1.0
     try:
         for _ in range(FADER_SEARCH_STEPS):
             middle = (low + high) / 2
-            mixer.setTrackVolume(track, middle)
-            if mixer.getTrackVolume(track, 1) < db:
+            mixer.setTrackVolume(probe, middle)
+            if mixer.getTrackVolume(probe, 1) < db:
                 low = middle
             else:
                 high = middle
+        mixer.setTrackVolume(probe, high)
+        found = {
+            "track": track,
+            "volume": mixer.getTrackVolume(probe),
+            "volume_db": mixer.getTrackVolume(probe, 1),
+        }
     except Exception:
-        mixer.setTrackVolume(track, before)  # not left wherever the search was
+        mixer.setTrackVolume(probe, before)  # not left wherever the search was
         raise
-    mixer.setTrackVolume(track, high)
-    return {
-        "track": track,
-        "volume": mixer.getTrackVolume(track),
-        "volume_db": mixer.getTrackVolume(track, 1),
-    }
+    if probe != track:
+        mixer.setTrackVolume(probe, before)
+        mixer.setTrackVolume(track, high)
+    return found
 
 
 def handle_mixer_set_track_pan(params: dict) -> dict:
@@ -1635,3 +1647,15 @@ def handle_playlist_set_track_name(params: dict) -> dict:
         return {"error": "track must be 1-%d, got %r" % (playlist.trackCount(), track)}
     playlist.setTrackName(track, str(params.get("name", "")))
     return {"track": track, "name": playlist.getTrackName(track)}
+
+
+def handle_playlist_set_track_muted(params: dict) -> dict:
+    """Mute or unmute a playlist track (its mute stays with the track number, not its clips)."""
+    track = params.get("track")
+    muted = params.get("muted")
+    if not _whole(track, 1, playlist.trackCount()):
+        return {"error": "track must be 1-%d, got %r" % (playlist.trackCount(), track)}
+    if not isinstance(muted, bool):
+        return {"error": "muted must be true or false, got %r" % (muted,)}
+    playlist.muteTrack(track, 1 if muted else 0)
+    return {"track": track, "is_muted": bool(playlist.isTrackMuted(track))}

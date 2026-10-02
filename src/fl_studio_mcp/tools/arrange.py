@@ -55,6 +55,10 @@ def place_in_playlist(
             f"The playlist already holds a song of {before['length_bars']:g} bars. Pass "
             "replace=true to delete every clip in it and lay the song out anew."
         )
+    # FL keeps a mute on the track number, so a pattern moved to another track
+    # would leave its mute behind (and pick up the new track's): read who was muted.
+    listed = fl_playlist._fl("playlist.getTracks", {"count": NAMED_TRACKS_CHECKED})["tracks"]
+    muted_names = {e["name"] for e in listed if e["is_muted"] and e["name"] in pattern_names}
     fl_playlist._fl("transport.setLoopMode", {"mode": "song"})
     fl_playlist.clear()
     fl_playlist.zoom_for_placing()
@@ -81,6 +85,9 @@ def place_in_playlist(
             pass  # FL isn't answering: that is reported by whatever failed above
     for pattern, track in tracks.items():
         fl_playlist._fl("playlist.setTrackName", {"track": track, "name": names[pattern]})
+        fl_playlist._fl(
+            "playlist.setTrackMuted", {"track": track, "muted": names[pattern] in muted_names}
+        )
     # A track an earlier, longer arrangement named after its pattern is empty now;
     # an empty name resets it. Names that aren't a pattern's are someone else's.
     listed = fl_playlist._fl("playlist.getTracks", {"count": NAMED_TRACKS_CHECKED})["tracks"]

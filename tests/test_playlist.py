@@ -297,6 +297,18 @@ def test_a_lost_connection_is_reported(tools, fl, monkeypatch):
     assert tools["fl_arrange"](SONG) == {"error": "MIDI port closed"}
 
 
+def test_a_mute_follows_its_pattern_to_its_new_track(tools, fl):
+    # Before: Riff on track 2 (muted), Drums on track 3 (playing), track 1 muted and empty.
+    fl.pattern_names = {1: "Drums", 2: "Riff", 3: "Chords"}
+    fl.track_names = {2: "Riff", 3: "Drums"}
+    fl.muted_tracks = {1, 2, 9}
+
+    tools["fl_arrange"](SONG, replace=True)
+
+    # Now Drums on 1, Chords on 2, Riff on 3; track 9 isn't the arrangement's business.
+    assert fl.muted_tracks == {3, 9}
+
+
 def test_the_playlist_can_be_read(tools, fl):
     fl.clips = {(1, 1, 3)}
     fl.track_names = {1: "Chords"}

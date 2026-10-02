@@ -257,6 +257,30 @@ def test_a_track_level_in_db_is_found_by_moving_the_fader(controller, fl_modules
     assert result["volume"] == pytest.approx(0.65, abs=0.001)
 
 
+def test_the_master_level_is_found_on_an_insert_since_its_own_reading_lags(controller, fl_modules):
+    mixer = fl_modules["mixer"]
+    mixer.trackCount.return_value = 18
+    faders = {0: 0.8, 1: 0.7}
+    shown = dict(faders)  # what FL answers: the master's only changes after the command
+
+    def move(track, volume):
+        faders[track] = volume
+        if track != 0:
+            shown[track] = volume
+
+    mixer.setTrackVolume.side_effect = move
+    mixer.getTrackVolume.side_effect = lambda track, mode=0: (
+        (shown[track] - 0.8) * 40 if mode else shown[track])
+
+    result = controller.dispatch_command("mixer.setTrackVolumeDb", {"track": 0, "db": -6.0})
+
+    assert faders[0] == pytest.approx(0.65, abs=0.001)
+    assert faders[1] == 0.7
+    assert result["track"] == 0
+    assert result["volume_db"] == pytest.approx(-6.0, abs=0.001)
+    assert result["volume"] == pytest.approx(0.65, abs=0.001)
+
+
 @pytest.mark.parametrize("params", [
     {"track": 6, "db": 6.0}, {"track": 6, "db": -200}, {"track": 6, "db": "loud"},
     {"track": 6}, {"track": 99, "db": -6.0},
