@@ -13,7 +13,7 @@ Requirements:
 
 Limitations:
 - Loading sounds, placing playlist clips and rendering work on Windows only
-- Cannot create automation
+- Automation is read from saved projects and created through FL's menu (Windows)
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from fastmcp import FastMCP
 from fl_studio_mcp.tools import (
     register_arrange_tools,
     register_audio_tools,
+    register_automation_tools,
     register_browser_tools,
     register_channel_setup_tools,
     register_channel_tools,
@@ -101,8 +102,9 @@ Important limitations:
    browser shows.
    Channels and effects can't be deleted, only undone right away (fl_undo).
 2. Playlist clips are placed by fl_arrange only (whole patterns on bar lines,
-   the whole playlist at once); single clips can't be moved or read, and
-   automation can't be created.
+   the whole playlist at once); single clips can't be moved. Automation clips
+   are made by fl_create_automation (after fl_arrange: it clears the playlist),
+   and saved projects are read by fl_read_project (automation and clips).
 3. Note triggering (fl_trigger_note) is real-time only - notes won't persist
    unless FL Studio is recording. Use step sequencer (fl_set_grid_bit) for
    persistent drum patterns.
@@ -200,6 +202,7 @@ register_plugin_tools(mcp)
 register_piano_roll_tools(mcp)
 register_arrange_tools(mcp)
 register_audio_tools(mcp)
+register_automation_tools(mcp)
 register_music_tools(mcp)
 register_project_tools(mcp)
 register_pattern_tools(mcp)

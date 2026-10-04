@@ -510,6 +510,23 @@ def handle_mixer_set_track_volume(params: dict) -> dict:
 MAX_TRACK_DB = 5.6  # a mixer fader all the way up
 MIN_TRACK_DB = -80.0
 FADER_SEARCH_STEPS = 24
+# Two fader positions whose readings must differ by more than FADER_CHECK_DB
+# (0.8 is 0 dB, 0.5 about -9 dB) for a track's reading to count as following.
+FADER_CHECK_POSITIONS = (0.8, 0.5)
+FADER_CHECK_DB = 3.0
+
+
+def _reading_follows(track: int) -> bool:
+    """Whether a track's dB reading changes at once when its fader moves. Put back after."""
+    before = mixer.getTrackVolume(track)
+    try:
+        readings = []
+        for position in FADER_CHECK_POSITIONS:
+            mixer.setTrackVolume(track, position)
+            readings.append(mixer.getTrackVolume(track, 1))
+    finally:
+        mixer.setTrackVolume(track, before)
+    return readings[0] - readings[1] > FADER_CHECK_DB
 
 
 def handle_mixer_set_track_volume_db(params: dict) -> dict:
@@ -518,10 +535,11 @@ def handle_mixer_set_track_volume_db(params: dict) -> dict:
     FL takes the fader's position (0-1, 0.8 is 0 dB) and tells the dB it gives,
     but not the other way round, so the position is found by halving.
 
-    Seen live: the master's reading only follows a move after the command has
-    returned (it answered 0 dB at every step, and the search left it at silence),
-    while an insert's follows at once. All faders share one law, so the master's
-    position is found on the first insert, which is put back.
+    Seen live: on some tracks the reading only follows a move after the command
+    has returned (the master; an insert carrying five effects), so a search there
+    sees one stale value and ends at silence or full. All faders share one law, so
+    the position is found on the first track whose reading does follow (the
+    track itself, else an insert), which is put back.
     """
     track = params.get("track")
     db = params.get("db")
@@ -532,7 +550,12 @@ def handle_mixer_set_track_volume_db(params: dict) -> dict:
             MIN_TRACK_DB <= db <= MAX_TRACK_DB):
         return {"error": "db must be a number from %g to %g" % (MIN_TRACK_DB, MAX_TRACK_DB)}
 
-    probe = track if track != 0 else 1
+    candidates = [track] if track != 0 else []
+    candidates += [t for t in range(1, mixer.trackCount() - 1) if t != track]
+    probe = next((t for t in candidates if _reading_follows(t)), None)
+    if probe is None:
+        return {"error": "no mixer track's level reading follows its fader, so the level "
+                         "can't be found"}
     before = mixer.getTrackVolume(probe)
     low, high = 0.0, 1.0
     try:
@@ -657,7 +680,8 @@ def handle_channels_get_info(params: dict) -> dict:
         "index": index,
         "name": channels.getChannelName(index, use_global),
         "color": hex(channels.getChannelColor(index, use_global)),
-        "volume": channels.getChannelVolume(index, use_global),
+        "volume": channels.getChannelVolume(index, useGlobalIndex=use_global),
+        "volume_db": channels.getChannelVolume(index, True, useGlobalIndex=use_global),
         "pan": channels.getChannelPan(index, use_global),
         "pitch": channels.getChannelPitch(index, useGlobalIndex=use_global),
         "is_muted": channels.isChannelMuted(index, use_global) == 1,
@@ -706,7 +730,8 @@ def handle_channels_get_selected() -> dict:
         "channel": {
             "index": index,
             "name": channels.getChannelName(index, True),
-            "volume": channels.getChannelVolume(index, True),
+            "volume": channels.getChannelVolume(index, useGlobalIndex=True),
+            "volume_db": channels.getChannelVolume(index, True, useGlobalIndex=True),
             "pan": channels.getChannelPan(index, True),
             "is_muted": channels.isChannelMuted(index, True) == 1,
             "is_solo": channels.isChannelSolo(index, True) == 1,
@@ -770,21 +795,26 @@ def handle_channels_trigger_note(params: dict) -> dict:
 
 
 def handle_channels_set_volume(params: dict) -> dict:
-    """Set channel volume."""
+    """Set channel volume.
+
+    The setter's third argument is pickupMode and the getter's second is mode (dB):
+    passing True there made FL ignore the value and read back dB. Keywords only.
+    """
     index = params.get("index", 0)
     volume = params.get("volume", 0.8)
-    channels.setChannelVolume(index, volume, True)
+    channels.setChannelVolume(index, volume, useGlobalIndex=True)
     return {
-        "volume": channels.getChannelVolume(index, True),
+        "volume": channels.getChannelVolume(index, useGlobalIndex=True),
+        "volume_db": channels.getChannelVolume(index, True, useGlobalIndex=True),
         "channel_name": channels.getChannelName(index, True),
     }
 
 
 def handle_channels_set_pan(params: dict) -> dict:
-    """Set channel pan."""
+    """Set channel pan (the setter's third argument is pickupMode: keywords only)."""
     index = params.get("index", 0)
     pan = params.get("pan", 0.0)
-    channels.setChannelPan(index, pan, True)
+    channels.setChannelPan(index, pan, useGlobalIndex=True)
     return {
         "pan": channels.getChannelPan(index, True),
         "channel_name": channels.getChannelName(index, True),

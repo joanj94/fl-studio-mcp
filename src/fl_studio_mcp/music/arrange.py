@@ -21,6 +21,8 @@ class Section:
     # Patterns played every so many bars instead of back to back (a crash on
     # the first beat of every 8 bars), by pattern index.
     every_bars: dict[int, int] = field(default_factory=dict)
+    # The section's bar (1-based) the first of those starts on, if not its first.
+    from_bar: dict[int, int] = field(default_factory=dict)
 
     @property
     def end(self) -> float:
@@ -31,17 +33,20 @@ def _is_whole_number(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def _pattern_entry(entry: object, number: int) -> tuple[int, int | None]:
-    """(pattern index, every so many bars or None) of one entry of a section's patterns."""
+def _pattern_entry(entry: object, number: int) -> tuple[int, tuple[int, int] | None]:
+    """(pattern index, (every so many bars, from which bar) or None) of one entry of a
+    section's patterns."""
     if _is_whole_number(entry) and entry >= 1:
         return entry, None
-    if isinstance(entry, dict) and set(entry) == {"pattern", "every_bars"}:
-        pattern, every = entry["pattern"], entry["every_bars"]
-        if _is_whole_number(pattern) and pattern >= 1 and _is_whole_number(every) and every >= 1:
-            return pattern, every
+    if isinstance(entry, dict) and set(entry) in ({"pattern", "every_bars"},
+                                                  {"pattern", "every_bars", "from_bar"}):
+        values = entry["pattern"], entry["every_bars"], entry.get("from_bar", 1)
+        if all(_is_whole_number(v) and v >= 1 for v in values):
+            return values[0], values[1:]
     raise ValueError(
         f"Section {number}: 'patterns' must be a list of pattern indexes, or of "
-        '{"pattern": index, "every_bars": bars} for a pattern played every so many bars'
+        '{"pattern": index, "every_bars": bars, "from_bar"?: bar} for a pattern played '
+        "every so many bars"
     )
 
 
@@ -49,8 +54,9 @@ def layout_sections(sections: list[dict], beats_per_bar: int) -> list[Section]:
     """Place sections back to back. Each is {"bars", "patterns", "name"?}.
 
     "patterns" may be empty: that section is silence. An entry is a pattern
-    index, or {"pattern", "every_bars"} for a pattern that is not repeated back
-    to back but started every so many bars. Raises ValueError on bad input.
+    index, or {"pattern", "every_bars", "from_bar"?} for a pattern that is not
+    repeated back to back but started every so many bars, from the section's
+    first bar or from its bar "from_bar". Raises ValueError on bad input.
     """
     if not sections:
         raise ValueError("At least one section is needed")
@@ -68,8 +74,10 @@ def layout_sections(sections: list[dict], beats_per_bar: int) -> list[Section]:
         entries = dict(_pattern_entry(entry, number) for entry in patterns)
         length = float(bars * beats_per_bar)
         name = str(section.get("name") or f"section {number}")
-        every = {pattern: gap for pattern, gap in entries.items() if gap is not None}
-        laid_out.append(Section(name, start, length, tuple(entries), every))
+        timed = {pattern: gap for pattern, gap in entries.items() if gap is not None}
+        laid_out.append(Section(name, start, length, tuple(entries),
+                                {pattern: every for pattern, (every, _) in timed.items()},
+                                {pattern: bar for pattern, (_, bar) in timed.items() if bar > 1}))
         start += length
     return laid_out
 
@@ -81,7 +89,8 @@ def clip_bars(
 
     A clip is as long as its pattern and can't be cut, so a section must be a
     whole number of repeats of each of its patterns; a pattern with
-    "every_bars" starts every so many bars instead and only has to fit once.
+    "every_bars" starts every so many bars instead (from the section's bar
+    "from_bar", if given) and only has to fit once.
     `lengths` are the patterns' lengths in beats. Raises ValueError for a
     pattern that is empty or doesn't fit.
     """
@@ -100,7 +109,8 @@ def clip_bars(
                         f"Pattern {pattern} is {step} bars long, so it can't start every "
                         f"{every} bars (section '{section.name}')"
                     )
-                starts = range(first, first + section_bars - step + 1, every)
+                starts = range(first + section.from_bar.get(pattern, 1) - 1,
+                               first + section_bars - step + 1, every)
                 if not starts:
                     raise ValueError(
                         f"Pattern {pattern} is {step} bars long and doesn't fit section "

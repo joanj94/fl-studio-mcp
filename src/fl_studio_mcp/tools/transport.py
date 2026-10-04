@@ -83,12 +83,12 @@ def register_transport_tools(mcp: FastMCP) -> None:
 
         Args:
             position: The position value. Interpretation depends on mode.
-            mode: Position format:
-                  0 = Percentage (0.0 to 1.0)
-                  1 = Time in milliseconds
-                  2 = Time in seconds (default)
-                  3 = Position in ticks
-                  4 = Position as bars:steps:ticks (encoded)
+            mode: Position format (verified live, FL 2026):
+                  0 = Time in milliseconds
+                  1 = Time in seconds
+                  2 = Position in ticks (default; a bar is 4 * PPQ ticks, 384 at PPQ 96)
+
+        The position FL reports back can still be the one from before the move.
         """
         conn = get_connection()
         result = conn.send_command("transport.setPosition", {

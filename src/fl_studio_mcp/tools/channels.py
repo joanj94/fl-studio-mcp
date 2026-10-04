@@ -54,6 +54,7 @@ def register_channel_tools(mcp: FastMCP) -> None:
             "name": result.get("name", ""),
             "color": result.get("color", "0x0"),
             "volume": result.get("volume", 0),
+            "volume_db": result.get("volume_db", 0),
             "pan": result.get("pan", 0),
             "pitch": result.get("pitch", 0),
             "is_muted": result.get("is_muted", False),

@@ -33,6 +33,8 @@ class FakeRack:
         self.scrolled = 0  # rows the list is scrolled down
         self.panel_height = 516
         self.button_menu = False  # the open menu is a channel button's, not the rack's
+        self.one_at_a_time = False  # True: each read finds one more of the channels gone
+        self.going: list[int] = []
 
     # --- fl_windows ------------------------------------------------------------
 
@@ -103,7 +105,10 @@ class FakeRack:
                 self._delete()
 
     def _delete(self) -> None:
-        self.names = [n for i, n in enumerate(self.names) if i not in self.selected]
+        if self.one_at_a_time:
+            self.going = sorted(self.selected, reverse=True)
+        else:
+            self.names = [n for i, n in enumerate(self.names) if i not in self.selected]
         self.selected = set()
 
     def click_message_button(self, position: int) -> bool:
@@ -131,6 +136,8 @@ class FakeRack:
     def call(self, action: str, params: dict | None = None) -> dict:
         params = params or {}
         if action == "channels.getAll":
+            if self.going:
+                del self.names[self.going.pop(0)]
             return {"channels": [
                 {"index": i, "name": name, "is_selected": i in self.selected,
                  "plugin": self.plugins[i] if i < len(self.plugins) else None}
@@ -183,6 +190,16 @@ def test_delete_walks_the_menu_and_confirms(rack):
 
     assert rack.names == ["Kick", "Lead"]
     assert rack.events == ["click", HOME, DOWN, DOWN, DOWN, DOWN, ENTER, "button 0"]
+
+
+def test_delete_waits_for_every_channel_to_go(rack, monkeypatch):
+    # Seen live: deleting 3 channels, the rack was read with only the first one gone.
+    monkeypatch.setattr(fl_channel_rack, "DELETE_TIMEOUT", 60.0)
+    rack.one_at_a_time = True
+
+    assert fl_channel_rack.delete_channels([1, 2, 3]) == 1
+    assert rack.names == ["Kick"]
+    assert rack.undone == 0
 
 
 def test_delete_works_when_fl_no_longer_asks(rack):

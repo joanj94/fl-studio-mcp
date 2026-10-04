@@ -292,19 +292,60 @@ def test_a_track_level_out_of_range_is_refused(controller, fl_modules, params):
     fl_modules["mixer"].setTrackVolume.assert_not_called()
 
 
+def _faders(mixer, positions, lagging=()):
+    """A mixer whose `lagging` tracks answer with the position they had before the command."""
+    mixer.trackCount.return_value = 18
+    faders = {t: positions.get(t, 0.8) for t in range(18)}
+    shown = dict(faders)
+
+    def move(track, volume):
+        faders[track] = volume
+        if track not in lagging:
+            shown[track] = volume
+
+    mixer.setTrackVolume.side_effect = move
+    mixer.getTrackVolume.side_effect = lambda track, mode=0: (
+        (shown[track] - 0.8) * 40 if mode else shown[track])
+    return faders
+
+
+def test_an_insert_whose_reading_lags_gets_its_level_found_on_another(controller, fl_modules):
+    # seen live: an insert carrying five effects read one stale value, and the
+    # search left its fader at -76 dB
+    faders = _faders(fl_modules["mixer"], {1: 0.7, 15: 0.8}, lagging={15})
+
+    result = controller.dispatch_command("mixer.setTrackVolumeDb", {"track": 15, "db": -4.0})
+
+    assert faders[15] == pytest.approx(0.7, abs=0.001)
+    assert faders[1] == 0.7
+    assert result["volume_db"] == pytest.approx(-4.0, abs=0.001)
+
+
+def test_a_level_is_refused_when_no_reading_follows_its_fader(controller, fl_modules):
+    faders = _faders(fl_modules["mixer"], {6: 0.6}, lagging=set(range(18)))
+
+    result = controller.dispatch_command("mixer.setTrackVolumeDb", {"track": 6, "db": -4.0})
+
+    assert "error" in result
+    assert faders[6] == 0.6
+    assert all(faders[t] == 0.8 for t in range(18) if t != 6)
+
+
 def test_a_failed_level_search_puts_the_fader_back(controller, fl_modules):
     mixer = fl_modules["mixer"]
-    mixer.trackCount.return_value = 18
-    moves: list[float] = []
-    mixer.setTrackVolume.side_effect = lambda track, volume: moves.append(volume)
+    faders = _faders(mixer, {6: 0.7})
+    law = mixer.getTrackVolume.side_effect
+    readings = {"n": 0}
 
     def read(track, mode=0):
         if mode:
-            raise RuntimeError("FL is busy")
-        return 0.8
+            readings["n"] += 1
+            if readings["n"] > len(controller.FADER_CHECK_POSITIONS):  # the search, not the check
+                raise RuntimeError("FL is busy")
+        return law(track, mode)
 
     mixer.getTrackVolume.side_effect = read
 
     with pytest.raises(RuntimeError):
         controller.handle_mixer_set_track_volume_db({"track": 6, "db": -6.0})
-    assert moves == [0.5, 0.8]
+    assert faders[6] == 0.7

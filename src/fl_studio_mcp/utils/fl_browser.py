@@ -23,17 +23,25 @@ MAX_ITEMS = 20000  # a walk longer than this is given up
 
 # An item's menu starts the same way for every kind of file (seen live, FL 2026):
 # entry 1 sends it to the selected channel, entry 2 opens it in a new channel.
-# An effect's menu has only the first of the two.
+# An effect's menu has only the first of the two. A sample's menu goes on with "Send to
+# playlist as an audio clip": FL puts the clip at the song position, on the first free
+# playlist track, unstretched (seen live, FL 2026).
 SEND_TO_SELECTED_CHANNEL = 1
 OPEN_IN_NEW_CHANNEL = 2
+SEND_TO_PLAYLIST_AS_AUDIO_CLIP = 3
 MENU_TIMEOUT = 2.0  # seconds for the menu to open or close
 MENU_POLL_INTERVAL = 0.05
 RESTORE_DELAY = 0.5  # seconds FL gets to draw its window after being un-minimized
 # How many items past the end of a folder are compared with what should follow it.
 TAIL_CHECK = 2
 CHANGED = "The browser changed while it was being read; try again."
+# "Reread structure": third from the bottom of the browser caption's menu.
+REREAD_KEYS = (fl_windows.VK_END, fl_windows.VK_UP, fl_windows.VK_UP)
+REREAD_SECONDS = 2.0  # FL reads its folders again (it says "Browser refreshed")
+REREAD_CLICK_SETTLE = 0.5
 # What can be loaded: FL's menu for other files (projects, scores, ...) starts differently.
-LOADABLE_SUFFIXES = (".wav", ".mp3", ".ogg", ".flac", ".aif", ".aiff", ".wv", ".fst")
+# Seen live: a Morphine preset (.mrp) has the same menu as an .fst and loads the same way.
+LOADABLE_SUFFIXES = (".wav", ".mp3", ".ogg", ".flac", ".aif", ".aiff", ".wv", ".fst", ".mrp")
 
 
 class BrowserError(Exception):
@@ -216,12 +224,48 @@ def go_to_file(path: str) -> BrowserItem:
         raise BrowserError(f"{target.name!r} is a folder, not a file.")
     if not target.name.lower().endswith(LOADABLE_SUFFIXES):
         raise BrowserError(
-            f"{target.name!r} is not a sample or a preset (.fst), so it can't be loaded."
+            f"{target.name!r} is not a sample or a preset (.fst, .mrp), so it can't be loaded."
         )
     _step("next", level.index(target) + 1)
     if focused() != target:
         raise BrowserError(CHANGED)
     return target
+
+
+def reread_structure() -> None:
+    """Make FL's browser read its folders from disk again ("Reread structure").
+
+    Seen live: the browser caches folder listings, so files written while FL runs
+    don't show until then. The entry is third from the bottom of the browser's
+    caption menu. Afterwards the browser has no cursor (every walk fails) until a
+    row of its tree gets a click, so one is posted to its first row. Windows only.
+    """
+    if platform.system() != "Windows":
+        raise BrowserError("The browser can only be reread on Windows.")
+    if fl_windows.popup_menu_count() != 0:
+        raise BrowserError("FL Studio has a menu open. Close it and try again.")
+    if not fl_windows.click_browser_menu_arrow():
+        raise BrowserError("FL Studio's browser isn't showing.")
+    try:
+        if not _wait_for_menus(1):
+            raise BrowserError("The browser's menu did not open.")
+        for key in REREAD_KEYS:
+            if not fl_windows.press_in_popup_menu(key):
+                raise BrowserError("The browser's menu closed unexpectedly.")
+        if fl_windows.pointer_over_menu():
+            raise BrowserError(
+                "The mouse pointer is over FL Studio's menu, where it moves the highlight, "
+                "so nothing was chosen. Try again with the pointer elsewhere."
+            )
+        if not fl_windows.press_enter_in_popup_menu():
+            raise BrowserError("The browser's menu did not take the choice.")
+    finally:
+        if fl_windows.popup_menu_count():
+            fl_windows.close_popup_menus()
+    time.sleep(REREAD_SECONDS)
+    if not fl_windows.click_browser_tree():
+        raise BrowserError("The browser's tree was not found after rereading it.")
+    time.sleep(REREAD_CLICK_SETTLE)
 
 
 def _wait_for_menus(count: int) -> bool:

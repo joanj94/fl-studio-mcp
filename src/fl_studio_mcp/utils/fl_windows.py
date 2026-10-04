@@ -27,6 +27,10 @@ SYSTEM_DIALOG_CLASS = "#32770"
 PIANO_ROLL_TITLE = "Piano roll"
 PLAYLIST_TITLE = "Playlist"
 CHANNEL_RACK_TITLE = "Channel rack"
+BROWSER_TITLE = "Browser"
+BROWSER_TREE_CLASS = "TDataBrowserTree"  # the browser's list of folders and files
+# A point on the browser tree's first row (pixels from the tree's top-left corner).
+BROWSER_ROW_OFFSET = (60, 10)
 CHANNEL_LIST_CLASS = "TVectorPanel"  # the rack's list of channels (and some of its bars)
 EDITOR_PANEL_CLASS = "TEventEditForm"  # the piano roll's and the playlist's window
 # In the playlist: the box above the track headers, left of the time ruler.
@@ -393,6 +397,23 @@ def click_channel_rack_menu_arrow() -> bool:
     user32, kernel32 = win_focus._libraries()
     main = win_focus.find_fl_window(user32, kernel32)
     return main is not None and click_panel_menu_arrow(user32, main, CHANNEL_RACK_TITLE)
+
+
+def click_browser_menu_arrow() -> bool:
+    """Open the browser's menu. False if no browser is showing."""
+    user32, kernel32 = win_focus._libraries()
+    main = win_focus.find_fl_window(user32, kernel32)
+    return main is not None and click_panel_menu_arrow(user32, main, BROWSER_TITLE)
+
+
+def click_browser_tree() -> bool:
+    """Click the browser tree's first row, which gives the browser a cursor again."""
+    user32, kernel32 = win_focus._libraries()
+    main = win_focus.find_fl_window(user32, kernel32)
+    if main is None:
+        return False
+    trees = _visible_children(user32, main, BROWSER_TREE_CLASS)
+    return bool(trees) and _post_click(user32, trees[0], BROWSER_ROW_OFFSET)
 
 
 def channel_list_panel() -> tuple[int, int] | None:

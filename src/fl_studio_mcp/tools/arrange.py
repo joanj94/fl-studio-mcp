@@ -143,6 +143,9 @@ def register_arrange_tools(mcp: FastMCP) -> None:
                 repeat back to back, give {"pattern": 9, "every_bars": 8}
                 instead of its index: a one-bar crash then plays at the start
                 of every 8 bars ("every_bars" as long as the section: once).
+                Add "from_bar": 5 to start the first one on the section's
+                5th bar instead of its first (a 4-bar build at the end of an
+                8-bar section).
             replace: Delete every clip already in the playlist first. Needed
                 whenever the playlist isn't empty.
             first_track: Playlist track (1-based) of the first pattern; the

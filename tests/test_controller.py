@@ -35,6 +35,31 @@ def test_known_action_succeeds_and_calls_fl_api(controller, fl_modules):
     assert response["volume"] == 0.5
 
 
+@pytest.mark.parametrize("action, setter, value", [
+    ("channels.setVolume", "setChannelVolume", {"volume": 1.0}),
+    ("channels.setPan", "setChannelPan", {"pan": -0.5}),
+])
+def test_channel_setters_never_pass_true_as_pickup_mode(controller, fl_modules, action, setter,
+                                                        value):
+    # seen live: setChannelVolume(i, v, True) set nothing (the 3rd argument is pickupMode)
+    _run(controller, {"id": "v", "action": action, "params": {"index": 17, **value}})
+
+    call = getattr(fl_modules["channels"], setter).call_args
+    assert call.args == (17, *value.values())
+    assert call.kwargs == {"useGlobalIndex": True}
+
+
+def test_channel_volume_reads_the_position_and_the_db_apart(controller, fl_modules):
+    fl_modules["channels"].getChannelColor.return_value = 0
+    fl_modules["channels"].getChannelVolume.side_effect = (
+        lambda index, mode=False, useGlobalIndex=False: -5.2 if mode else 0.78)
+
+    response = controller.handle_channels_get_info({"index": 3})
+
+    assert response["volume"] == 0.78
+    assert response["volume_db"] == -5.2
+
+
 def test_response_echoes_request_id(controller):
     response = _run(controller, {"id": "req-42", "action": "transport.getLength"})
 

@@ -152,7 +152,10 @@ def delete_channels(indexes: list[int]) -> int:
                 "and nothing was deleted"
             )
     wanted = before - len(indexes)
-    _wait_until(lambda: fl_windows.open_message() is None and _count() != before, DELETE_TIMEOUT)
+    # Seen live: FL takes the channels out one at a time, so a rack that is only
+    # shorter isn't done yet. A longer one is a clone, which comes all at once.
+    _wait_until(lambda: fl_windows.open_message() is None and (
+        (count := _count()) == wanted or count > before), DELETE_TIMEOUT)
     after = _count()
     if fl_windows.open_message() is not None:  # never leave FL blocked by a box
         fl_windows.close_messages()

@@ -150,6 +150,14 @@ def test_two_files_with_the_same_stem_need_the_extension(fake_fl):
     assert fl_browser.go_to_file("Packs/Drums/Hats/Hat 1.fst").name == "Hat 1.fst"
 
 
+def test_a_plugins_own_preset_format_can_be_reached(fake_fl):
+    # Seen live: Morphine's presets are .mrp, and their menu is the same as an .fst's.
+    fake_fl.tree["Channel presets"]["Morphine"] = {"LED Scream MC.mrp": None}
+
+    assert fl_browser.go_to_file("Channel presets/Morphine/LED Scream MC").name == (
+        "LED Scream MC.mrp")
+
+
 # --- the item's menu -------------------------------------------------------
 
 
