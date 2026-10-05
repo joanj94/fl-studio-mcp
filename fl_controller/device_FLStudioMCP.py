@@ -233,6 +233,8 @@ def dispatch_command(action: str, params: dict) -> dict:
         return handle_mixer_set_track_color(params)
     elif action == "mixer.setStereoSep":
         return handle_mixer_set_stereo_sep(params)
+    elif action == "mixer.routeTrack":
+        return handle_mixer_route_track(params)
 
     # Channel commands
     elif action == "channels.getCount":
@@ -658,6 +660,47 @@ def handle_mixer_set_stereo_sep(params: dict) -> dict:
     separation = params.get("separation", 0.0)
     mixer.setTrackStereoSep(track, separation)
     return {"separation": separation}
+
+
+def handle_mixer_route_track(params: dict) -> dict:
+    """Send an insert track's output to another track (0 = the master).
+
+    With "only" (the default) every other route of the track is removed; without it
+    the route is added to the ones it has. "level" sets the route's send level
+    (0.8 = 0 dB; 0 sends nothing but still feeds the destination's sidechain inputs).
+    """
+    track = params.get("track")
+    to = params.get("to", 0)
+    only = params.get("only", True)
+    level = params.get("level")
+    error = _check_mixer_track(track) or _check_mixer_track(to)
+    if error:
+        return {"error": error}
+    # The last of trackCount() is FL's "current" track, not an insert.
+    last_insert = mixer.trackCount() - 2
+    if not 1 <= track <= last_insert:
+        return {"error": "track must be an insert track, 1-%d" % last_insert}
+    if to == track:
+        return {"error": "a track can't be routed to itself"}
+    if level is not None and (isinstance(level, bool) or not isinstance(level, (int, float))
+                              or not 0 <= level <= 1):
+        return {"error": "level must be a number from 0 to 1"}
+    for dest in range(last_insert + 1):
+        if dest == to:
+            mixer.setRouteTo(track, dest, True)
+        elif only and dest != track:
+            mixer.setRouteTo(track, dest, False)
+    mixer.afterRoutingChanged()
+    if level is not None:
+        mixer.setRouteToLevel(track, to, float(level))
+    routes = [d for d in range(last_insert + 1)
+              if d != track and mixer.getRouteSendActive(track, d)]
+    if to not in routes or (only and routes != [to]):
+        return {"error": "track %d is routed to %s after routing it to %d" % (track, routes, to)}
+    result = {"track": track, "to": to, "routes": routes}
+    if level is not None:
+        result["level"] = round(mixer.getRouteToLevel(track, to), 3)
+    return result
 
 
 # =============================================================================

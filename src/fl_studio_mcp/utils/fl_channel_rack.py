@@ -140,6 +140,8 @@ def delete_channels(indexes: list[int]) -> int:
             f"FL Studio selected channels {selected} instead of {sorted(indexes)}; none deleted"
         )
 
+    # Seen live: with the playlist and piano roll over it, the rack's menu arrow can't open.
+    _fl("ui.focusWindow", {"window": "channel rack"})
     _choose_delete()
     # The box doesn't come when its "Remember my choice" was ticked before.
     if _wait_until(lambda: fl_windows.open_message() is not None, CONFIRM_TIMEOUT):

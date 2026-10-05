@@ -7,9 +7,10 @@ linked to (seen live, FL 2026). So a clip FL made for a parameter gets any
 shape by writing a preset and loading it.
 
 The events below are those of FL's stock "Special/60-180 Tempo.fst", with its
-points and name replaced. Points are in beats from the clip's start (each
-stored as the distance from the point before), values 0-1 over the
-parameter's whole range, tension -1..1 (0 is a straight line). The clip
+points, name and range (event 219, now the parameter's whole range) replaced.
+Points are in beats from the clip's start (each stored as the distance from the
+point before), values 0-1 over the parameter's whole range, tension -1..1 (0 is
+a straight line). The clip
 FL shows is as long as its last point.
 """
 
@@ -43,7 +44,10 @@ _BEFORE_POINTS = (
     _e(138, 8388736), _e(139, 65536), _e(89, 0), _e(69, 128), _e(86, 256), _e(71, 1024),
     _e(83, 0), _e(74, 0), _e(75, 0), _e(76, 0), _e(85, 2048), _e(131, 8388608), _e(70, 0),
     _e(22, 0),
-    _e(219, "870200009808000000000000000100000000000000000000"),
+    # 219: the range the clip's 0-1 covers, min and max of 12800. The stock preset's
+    # 647-2200 (its 60-180 BPM) put a point at 0.8 on a fader at 0.148 (seen live);
+    # a clip FL makes itself has 0-12800.
+    _e(219, "000000000032000000000000000100000000000000000000"),
     _e(229, "0000000000320000000000000000000000000000"),
     _e(221, "01000000f401000000"),
     _e(215, "ffffffff0000000001000000ffffffff3c0000000000803f0000803f0000803f0000803f"

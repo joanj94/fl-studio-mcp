@@ -13,6 +13,7 @@ those points, keeps its link, and its playlist clip is as long as the last point
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 from datetime import datetime
@@ -24,10 +25,11 @@ from fl_studio_mcp.project.flp import FlpError, parse
 from fl_studio_mcp.project.preset import Point, automation_preset, check_points
 from fl_studio_mcp.project.reader import Project, describe_target, read_project
 from fl_studio_mcp.tools.browser import Load, send_to_channel
-from fl_studio_mcp.utils import fl_browser, fl_channel_rack, fl_windows, win_focus
+from fl_studio_mcp.utils import fl_browser, fl_channel_rack, fl_playlist, fl_windows, win_focus
 from fl_studio_mcp.utils.connection import call
 from fl_studio_mcp.utils.fl_automation import AutomationError, choose_automation_for_last_tweaked
 from fl_studio_mcp.utils.fl_browser import BrowserError
+from fl_studio_mcp.utils.fl_playlist import PlaylistError
 from fl_studio_mcp.utils.fl_trigger import keyboard_lock
 from fl_studio_mcp.utils.paths import get_fl_settings_dir
 from fl_studio_mcp.utils.roles import resolve_channel
@@ -166,22 +168,29 @@ def _point_value(point: dict, kind: str, parameter: str) -> float:
 
 
 def to_points(points: list[dict], kind: str, parameter: str,
-              beats_per_bar: int) -> tuple[float, list[Point]]:
-    """(first bar, points in beats from it) of points given at song bars; raises ValueError."""
+              beats_per_bar: int) -> tuple[int, list[Point]]:
+    """(the clip's bar, points in beats from it) of points given at song bars.
+
+    A clip can only be put on a bar line (see `_go_to_bar`): one whose first point
+    lies inside a bar starts at that bar, with the first point's value held up to
+    it. Raises ValueError.
+    """
     if not points:
         raise ValueError("Give the automation's points.")
     try:
         bars = [float(point["bar"]) for point in points]
     except (KeyError, TypeError, ValueError):
         raise ValueError("Every point needs a bar (1 is the song's start).") from None
-    start = bars[0]
-    if start < 1:
+    if bars[0] < 1:
         raise ValueError("Bars start at 1.")
+    start = math.floor(bars[0])
     converted = [
         Point((bar - start) * beats_per_bar, _point_value(point, kind, parameter),
               float(point.get("tension", 0.0)))
         for bar, point in zip(bars, points)
     ]
+    if converted[0].beat > 0:
+        converted.insert(0, Point(0.0, converted[0].value))
     check_points(converted)
     return start, converted
 
@@ -225,17 +234,17 @@ def _touch(target: dict) -> None:
             raise AutomationError(result["error"])
 
 
-def _go_to_bar(bar: float) -> None:
-    """Put the song position at `bar`, where FL puts the clip it makes."""
+def _go_to_bar(bar: int) -> None:
+    """Click the playlist's time ruler at `bar`: FL puts the clip it makes where the
+    playlist was last clicked (`fl_playlist.click_ruler_at`)."""
     bar_ticks = call("playlist.getState")["bar_ticks"]
-    ticks = round((bar - 1) * bar_ticks)
-    call("transport.setPosition", {"position": ticks, "mode": 2})
-    reached = call("playlist.getSongPosition")["ticks"]
-    if reached != ticks:
+    try:
+        fl_playlist.click_ruler_at(bar, bar_ticks)
+    except PlaylistError as e:
         raise AutomationError(
-            f"The song position could not be put at bar {bar:g} (it went to tick {reached}); "
-            "FL keeps it inside the song, so the automation must start before the song's end."
-        )
+            f"The playlist could not be clicked at bar {bar} ({e}). The song position stays "
+            "inside the song, so the automation must start before the song's end."
+        ) from e
 
 
 def _channels() -> list[dict]:
@@ -308,7 +317,7 @@ def _make_linked_clip(load: Load, target: dict) -> tuple[int, str]:
     )
 
 
-def create_automation(load: Load, target: dict, start_bar: float, points: list[Point],
+def create_automation(load: Load, target: dict, start_bar: int, points: list[Point],
                       name: str | None, beats_per_bar: int) -> dict:
     """Make FL create the clip and give it the points; removes it again if that fails."""
     _go_to_bar(start_bar)
@@ -382,8 +391,9 @@ def register_automation_tools(mcp: FastMCP) -> None:
         """Create an automation clip for a mixer track's or a channel's volume or pan.
 
         FL makes a clip linked to the parameter and puts it into the playlist at
-        the first point's bar, on a playlist track it chooses; the clip
-        is as long as its points. fl_arrange clears the whole playlist, so create
+        the first point's bar (on its bar line: a first point inside a bar is held
+        from the bar's start), on a playlist track it chooses; the clip is as long
+        as its points. fl_arrange clears the whole playlist, so create
         automation after arranging. Windows only.
 
         Args:

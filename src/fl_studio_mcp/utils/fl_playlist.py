@@ -319,6 +319,23 @@ def _aim(panel: PlaylistPanel, bar: int, bar_ticks: int) -> int:
         time.sleep(POLL_INTERVAL)
 
 
+def click_ruler_at(bar: int, bar_ticks: int) -> None:
+    """Click the playlist's time ruler at `bar` (inside the song).
+
+    Seen live: FL puts a clip it makes itself (ADD > "Automation for last tweaked
+    parameter") where the playlist was last clicked, not at a song position set
+    through the API (three clips meant for bars 11.5, 69 and 30 all landed on the
+    bar `fl_arrange` clicked last; after a ruler click at bar 30, at bar 30).
+    """
+    panel = open_panel()
+    zoom_for_placing()
+    snap_to_bars(True)  # with snap "Main" the click lands a little after the bar line
+    try:
+        _aim(panel, bar, bar_ticks)
+    finally:
+        snap_to_bars(False)
+
+
 def place_last_clip(panel: PlaylistPanel, y: int, bar: int, end_bar: float) -> None:
     """Put the clip that ends the song into the *empty* playlist, and check it.
 

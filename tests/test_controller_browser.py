@@ -349,3 +349,65 @@ def test_a_failed_level_search_puts_the_fader_back(controller, fl_modules):
     with pytest.raises(RuntimeError):
         controller.handle_mixer_set_track_volume_db({"track": 6, "db": -6.0})
     assert faders[6] == 0.7
+
+
+@pytest.fixture
+def routes(fl_modules):
+    """Mixer of 16 inserts whose routes are kept as (source, destination) pairs."""
+    mixer = fl_modules["mixer"]
+    mixer.trackCount.return_value = 18  # master, 16 inserts, "current"
+    sends = {(t, 0) for t in range(1, 17)}
+
+    def route(track, dest, on, *rest):
+        (sends.add if on else sends.discard)((track, dest))
+
+    mixer.setRouteTo.side_effect = route
+    mixer.getRouteSendActive.side_effect = lambda track, dest: (track, dest) in sends
+    levels = {}
+    mixer.setRouteToLevel.side_effect = lambda track, dest, level: levels.update(
+        {(track, dest): level})
+    mixer.getRouteToLevel.side_effect = lambda track, dest: levels.get((track, dest), 0.8)
+    return sends
+
+
+def test_a_track_routed_to_a_bus_leaves_the_master(controller, routes):
+    result = controller.dispatch_command("mixer.routeTrack", {"track": 2, "to": 16})
+
+    assert result == {"track": 2, "to": 16, "routes": [16]}
+    assert (2, 16) in routes and (2, 0) not in routes
+
+
+def test_routing_back_to_the_master_leaves_the_bus(controller, routes):
+    controller.dispatch_command("mixer.routeTrack", {"track": 2, "to": 16})
+
+    result = controller.dispatch_command("mixer.routeTrack", {"track": 2, "to": 0})
+
+    assert result == {"track": 2, "to": 0, "routes": [0]}
+    assert (2, 0) in routes and (2, 16) not in routes
+
+
+@pytest.mark.parametrize("track, to", [(0, 3), (17, 0), (3, 3), (3, 18)])
+def test_the_master_the_current_track_and_loops_are_refused(controller, routes, track, to):
+    result = controller.dispatch_command("mixer.routeTrack", {"track": track, "to": to})
+
+    assert "error" in result
+    assert (3, 3) not in routes
+
+
+def test_a_send_keeps_the_other_routes_and_sets_its_level(controller, routes):
+    controller.dispatch_command("mixer.routeTrack", {"track": 1, "to": 16})
+
+    result = controller.dispatch_command(
+        "mixer.routeTrack", {"track": 1, "to": 2, "only": False, "level": 0.0})
+
+    assert result == {"track": 1, "to": 2, "routes": [2, 16], "level": 0.0}
+    assert {(1, 2), (1, 16)} <= routes
+
+
+@pytest.mark.parametrize("level", [-0.1, 1.5, True, "loud"])
+def test_a_level_outside_0_to_1_is_refused(controller, routes, level):
+    result = controller.dispatch_command(
+        "mixer.routeTrack", {"track": 1, "to": 2, "only": False, "level": level})
+
+    assert "error" in result
+    assert (1, 2) not in routes

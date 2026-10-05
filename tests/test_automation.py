@@ -13,6 +13,7 @@ from fl_studio_mcp.project import fader, flp, preset, reader
 from fl_studio_mcp.project.flp import Event, FlpError, FlpFile
 from fl_studio_mcp.project.preset import Point
 from fl_studio_mcp.tools import automation
+from fl_studio_mcp.utils.fl_playlist import PlaylistError
 from tests.fakes import ToolCollector
 
 # --- building test projects ----------------------------------------------------------------
@@ -160,14 +161,25 @@ def test_a_preset_holds_the_points_given():
     assert [e.value for e in parsed.events if e.id == 21] == [5]  # an automation clip
 
 
-def test_a_preset_with_the_stock_points_is_fls_own_preset_byte_for_byte():
+def test_a_preset_spans_the_parameters_whole_range():
+    # Seen live: with the stock preset's range (647-2200 of 12800) a point at 0.8 put a
+    # fader at 0.148 (-25 dB). A clip FL makes itself has 0-12800.
+    parsed = flp.parse(preset.automation_preset([Point(0, 0.5), Point(4, 0.5)], "Range"))
+    (data,) = [e.data for e in parsed.events if e.id == 219]
+    assert struct.unpack_from("<II", data) == (0, 12800)
+
+
+def test_a_preset_with_the_stock_points_is_fls_own_preset_but_for_the_range():
     stock = (Path(os.environ.get("PROGRAMFILES", "C:/Program Files"))
              / "Image-Line/FL Studio 2026/Data/Patches/Channel presets/Automation clips"
              / "Special/60-180 Tempo.fst")
     if not stock.is_file():
         pytest.skip("FL Studio 2026's presets aren't installed here")
-    built = preset.automation_preset([Point(0, 0.5), Point(4, 0.5)], "Tempo (coarse)")
-    assert built == stock.read_bytes()
+    built = flp.parse(preset.automation_preset([Point(0, 0.5), Point(4, 0.5)], "Tempo (coarse)"))
+    original = flp.parse(stock.read_bytes())
+    assert [e.id for e in built.events] == [e.id for e in original.events]
+    differing = [b.id for b, o in zip(built.events, original.events) if b.data != o.data]
+    assert differing == [219]
 
 
 @pytest.mark.parametrize("points", [
@@ -211,10 +223,18 @@ def test_points_at_song_bars_become_beats_from_the_first():
          {"bar": 144, "value": 0.87}],
         "mixer track", "volume", 4,
     )
-    assert start == 20.5
-    assert [p.beat for p in points] == [0, 26, 494]
-    assert points[1].value == pytest.approx(fader.db_to_position(4.2))
-    assert points[1].tension == 0.3
+    assert start == 20
+    assert [p.beat for p in points] == [0, 2, 28, 496]  # held from the bar's start
+    assert points[0].value == points[1].value
+    assert points[2].value == pytest.approx(fader.db_to_position(4.2))
+    assert points[2].tension == 0.3
+
+
+def test_points_starting_on_a_bar_line_get_no_extra_point():
+    start, points = automation.to_points(
+        [{"bar": 11, "value": 0.0}, {"bar": 22, "value": 0.9}], "mixer track", "volume", 4)
+    assert start == 11
+    assert [p.beat for p in points] == [0, 44]
 
 
 def test_pan_points_go_from_left_to_right():
@@ -285,6 +305,7 @@ class FakeFL:
         self.rack = [{"name": "Pad"}]
         self.made_name = "Pad - Volume"
         self.position = 0
+        self.song_bars = 150
         self.log: list[str] = []
         self.loads: list[tuple[str, int]] = []
         self.deleted: list[list[int]] = []
@@ -312,12 +333,19 @@ class FakeFL:
         self.log.append("menu")
         self.rack.append({"name": self.made_name})
 
+    def click_ruler_at(self, bar: int, bar_ticks: int) -> None:
+        if bar > self.song_bars:
+            raise PlaylistError(f"The playlist did not scroll to bar {bar}")
+        self.log.append("ruler")
+        self.position = (bar - 1) * bar_ticks
+
 
 @pytest.fixture
 def fake_fl(monkeypatch, settings_dir):
     fl = FakeFL()
     monkeypatch.setattr(automation, "call", fl.call)
     monkeypatch.setattr(automation, "choose_automation_for_last_tweaked", fl.menu)
+    monkeypatch.setattr(automation.fl_playlist, "click_ruler_at", fl.click_ruler_at)
     monkeypatch.setattr(automation, "_make_browser_see", lambda name: fl.log.append("browser"))
     monkeypatch.setattr(automation, "send_to_channel",
                         lambda load, path, index, keep_name: fl.loads.append((path, index)))
@@ -336,9 +364,10 @@ class _Load:
         return value if done(value) else None
 
 
-def test_creating_goes_to_the_bar_tweaks_the_target_and_loads_the_points(fake_fl, settings_dir):
-    result = automation.create_automation(_Load(), TARGET, 20.5, POINTS, None, 4)
-    assert fake_fl.position == 19.5 * 384
+def test_creating_clicks_the_bar_tweaks_the_target_and_loads_the_points(fake_fl, settings_dir):
+    result = automation.create_automation(_Load(), TARGET, 20, POINTS, None, 4)
+    assert fake_fl.position == 19 * 384
+    assert fake_fl.log.index("ruler") < fake_fl.log.index("mixer.setTrackVolume")
     assert fake_fl.log.index("mixer.setTrackVolume") < fake_fl.log.index("menu")
     assert fake_fl.loads == [("Project bones/FL-MCP automation/Pad - Volume.fst", 1)]
     written = settings_dir.parent / "Projects/Project bones/FL-MCP automation/Pad - Volume.fst"
@@ -396,15 +425,7 @@ def test_a_clip_made_for_something_else_every_time_is_refused(removing_fl):
     assert fl.loads == []
 
 
-def test_a_bar_past_the_song_end_is_refused_before_anything_is_made(fake_fl, monkeypatch):
-    original = fake_fl.call
-
-    def clamped(action, params=None):
-        if action == "playlist.getSongPosition":
-            return {"ticks": 100}
-        return original(action, params)
-
-    monkeypatch.setattr(automation, "call", clamped)
+def test_a_bar_past_the_song_end_is_refused_before_anything_is_made(fake_fl):
     with pytest.raises(automation.AutomationError):
         automation.create_automation(_Load(), TARGET, 200, POINTS, None, 4)
     assert "menu" not in fake_fl.log
