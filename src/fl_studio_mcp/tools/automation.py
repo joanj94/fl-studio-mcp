@@ -30,6 +30,7 @@ from fl_studio_mcp.utils.connection import call
 from fl_studio_mcp.utils.fl_automation import AutomationError, choose_automation_for_last_tweaked
 from fl_studio_mcp.utils.fl_browser import BrowserError
 from fl_studio_mcp.utils.fl_playlist import PlaylistError
+from fl_studio_mcp.utils.fl_save import SaveError, save_project
 from fl_studio_mcp.utils.fl_trigger import keyboard_lock
 from fl_studio_mcp.utils.paths import get_fl_settings_dir
 from fl_studio_mcp.utils.roles import resolve_channel
@@ -83,6 +84,15 @@ def find_project_file(projects_dir: Path, title: str | None) -> Path | None:
     if title:
         wanted = re.compile(re.escape(title) + r"( \(autosaved on [^)]*\))?\.flp", re.IGNORECASE)
         files = [f for f in files if wanted.fullmatch(f.name)]
+    return max(files, key=lambda f: f.stat().st_mtime, default=None)
+
+
+def find_saved_project(projects_dir: Path, title: str) -> Path | None:
+    """The open project's own file, "<title>.flp" (not an autosave or backup), newest first."""
+    if not projects_dir.is_dir():
+        return None
+    files = [f for f in projects_dir.rglob("*.flp")
+             if f.name.lower() == f"{title}.flp".lower() and "Backup" not in f.parts]
     return max(files, key=lambda f: f.stat().st_mtime, default=None)
 
 
@@ -346,6 +356,31 @@ def create_automation(load: Load, target: dict, start_bar: int, points: list[Poi
 
 def register_automation_tools(mcp: FastMCP) -> None:
     """Register the automation tools with the MCP server."""
+
+    @mcp.tool()
+    def fl_save_project() -> str:
+        """Save the open project (FL's File > Save) and confirm its file was written.
+
+        The project must have been saved once and live under FL's Projects
+        folder, where its file is found by FL's window title (a project without
+        a file would make FL open its Save As dialog, left for you to answer).
+        In the trial, the "Buy FL Studio" window that comes with saving is
+        closed. Windows only.
+        """
+        try:
+            title = _fl_project_title()
+            project = find_saved_project(_user_dir() / PROJECTS_FOLDER, title) if title else None
+            if project is None:
+                return ("Error: the open project's file wasn't found under FL's Projects folder, "
+                        "so a save couldn't be confirmed; nothing was done")
+            with keyboard_lock:
+                shop = save_project(project)
+        except SaveError as e:
+            return f"Error: {e}"
+        except Exception as e:  # e.g. Windows refusing a call: a tool answers, it doesn't raise
+            return f"Error: {e}"
+        note = " (the trial's \"Buy FL Studio\" window was closed)" if shop else ""
+        return f"Project saved to {project}{note}"
 
     @mcp.tool()
     def fl_read_project(path: str = "", include_clips: bool = False) -> dict:

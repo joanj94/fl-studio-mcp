@@ -556,3 +556,17 @@ def test_a_clip_fl_renames_after_its_target_a_moment_later_is_kept(fake_fl, monk
     result = automation.create_automation(_Load(), TARGET, 1, POINTS, None, 4)
     assert result["name"] == "Pad - Volume"
     assert fake_fl.deleted == []
+
+
+def test_find_saved_project_skips_backups(tmp_path):
+    from fl_studio_mcp.tools.automation import find_saved_project
+
+    own = tmp_path / "Song" / "Song.flp"
+    backup = tmp_path / "Song" / "Backup" / "Song.flp"
+    for f in (own, backup):
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"FLhd")
+    (tmp_path / "Song" / "Backup" / "Song (autosaved on 1).flp").write_bytes(b"FLhd")
+
+    assert find_saved_project(tmp_path, "Song") == own
+    assert find_saved_project(tmp_path, "Other") is None
