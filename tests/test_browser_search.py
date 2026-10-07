@@ -28,7 +28,8 @@ def disk(tmp_path) -> tuple[Path, Path]:
            "Packs/Drums/Kicks/readme.txt", "Packs/Drums/Hats/909 CH 1.wav",
            "Packs/Risers/Riser Noise.wv", "Packs.nfo",
            "Plugin presets/Generators/Sytrus/Pad/Dark heaven.fst",
-           "Plugin presets/Generators/Sytrus/Drum/Kick.fst")
+           "Plugin presets/Generators/Sytrus/Drum/Kick.fst",
+           "Plugin presets/Generators/Morphine/Leads/LED Scream MC.mrp")
     _files(user, "Presets/Plugin presets/Generators/Sytrus/My dark lead.fst",
            "Projects/Project bones/Hardcore Kick 040 F.wav", "Settings/unrelated.wav")
     return install, user
@@ -115,3 +116,8 @@ def test_the_tool_says_when_fls_own_folders_could_not_be_searched(tools, monkeyp
 ])
 def test_the_tool_refuses_bad_arguments(tools, kwargs, message):
     assert message in tools["fl_browser_search"](**kwargs)["error"]
+
+
+def test_morphine_presets_are_found(disk):
+    assert _search(disk, "morphine scream") == (
+        ["Plugin presets/Generators/Morphine/Leads/LED Scream MC.mrp"], 1)

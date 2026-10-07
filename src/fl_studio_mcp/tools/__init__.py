@@ -2,6 +2,7 @@
 
 from fl_studio_mcp.tools.arrange import register_arrange_tools
 from fl_studio_mcp.tools.audio import register_audio_tools
+from fl_studio_mcp.tools.automation import register_automation_tools
 from fl_studio_mcp.tools.browser import register_browser_tools
 from fl_studio_mcp.tools.channel_setup import register_channel_setup_tools
 from fl_studio_mcp.tools.channels import register_channel_tools
@@ -24,6 +25,7 @@ __all__ = [
     "register_channel_setup_tools",
     "register_arrange_tools",
     "register_audio_tools",
+    "register_automation_tools",
     "register_browser_tools",
     "register_plugin_tools",
     "register_piano_roll_tools",

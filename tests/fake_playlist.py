@@ -42,6 +42,7 @@ class FakePlaylist:
         self.snap = "Main"
         self.mode = "pattern"
         self.track_names: dict[int, str] = {}
+        self.muted_tracks: set[int] = set()
         self.selected_tracks: list[int] = []
         self.time_selection = False
         self.clips_selected = False
@@ -106,7 +107,8 @@ class FakePlaylist:
             return {"ticks": self.position}
         elif action == "playlist.getTracks":
             return {"tracks": [
-                {"track": t, "name": self.track_names.get(t, f"Track {t}"), "is_muted": False}
+                {"track": t, "name": self.track_names.get(t, f"Track {t}"),
+                 "is_muted": t in self.muted_tracks}
                 for t in range(1, params["count"] + 1)
             ]}
         elif action == "playlist.setTrackName":
@@ -114,6 +116,11 @@ class FakePlaylist:
                 self.track_names[params["track"]] = params["name"]
             else:
                 self.track_names.pop(params["track"], None)  # FL: back to "Track N"
+        elif action == "playlist.setTrackMuted":
+            if params["muted"]:
+                self.muted_tracks.add(params["track"])
+            else:
+                self.muted_tracks.discard(params["track"])
         elif action == "patterns.select":
             self.pattern = params["index"]
         elif action == "transport.setLoopMode":

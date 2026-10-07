@@ -260,6 +260,37 @@ def register_mixer_tools(mcp: FastMCP) -> None:
         return f"Track {track} color set to RGB({red}, {green}, {blue})"
 
     @mcp.tool()
+    def fl_route_track(track: int, to: int = 0, only: bool = True,
+                       level: float | None = None) -> str:
+        """Send a mixer insert track's output to another track.
+
+        By default the track is taken off every other destination (the master
+        included), so several tracks can be summed on a bus track. With only=False
+        the route is added to the track's others: a send, e.g. a copy of a track
+        into a parallel effects track. A route also feeds the destination's
+        sidechain inputs (a compressor or limiter there can pick it).
+
+        Args:
+            track: The insert track to route (1 or higher).
+            to: The track to send it to; 0 (the master) undoes a bus routing.
+            only: Remove the track's other routes (True) or keep them (False).
+            level: Send level 0-1 (0.8 = 0 dB); 0 sends no sound but still feeds
+                the destination's sidechain inputs. Leave out to keep FL's.
+        """
+        params = {"track": track, "to": to, "only": only}
+        if level is not None:
+            params["level"] = level
+        conn = get_connection()
+        result = conn.send_command("mixer.routeTrack", params)
+
+        if not result.get("success", False) and "error" in result:
+            return f"Error: {result['error']}"
+
+        routes = result.get("routes", [to])
+        sent = f" at level {result['level']}" if "level" in result else ""
+        return f"Track {track} routed to track {to}{sent}; it now goes to {routes}"
+
+    @mcp.tool()
     def fl_set_stereo_separation(track: int, separation: float) -> str:
         """Set the stereo separation of a mixer track.
 

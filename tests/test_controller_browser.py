@@ -257,6 +257,30 @@ def test_a_track_level_in_db_is_found_by_moving_the_fader(controller, fl_modules
     assert result["volume"] == pytest.approx(0.65, abs=0.001)
 
 
+def test_the_master_level_is_found_on_an_insert_since_its_own_reading_lags(controller, fl_modules):
+    mixer = fl_modules["mixer"]
+    mixer.trackCount.return_value = 18
+    faders = {0: 0.8, 1: 0.7}
+    shown = dict(faders)  # what FL answers: the master's only changes after the command
+
+    def move(track, volume):
+        faders[track] = volume
+        if track != 0:
+            shown[track] = volume
+
+    mixer.setTrackVolume.side_effect = move
+    mixer.getTrackVolume.side_effect = lambda track, mode=0: (
+        (shown[track] - 0.8) * 40 if mode else shown[track])
+
+    result = controller.dispatch_command("mixer.setTrackVolumeDb", {"track": 0, "db": -6.0})
+
+    assert faders[0] == pytest.approx(0.65, abs=0.001)
+    assert faders[1] == 0.7
+    assert result["track"] == 0
+    assert result["volume_db"] == pytest.approx(-6.0, abs=0.001)
+    assert result["volume"] == pytest.approx(0.65, abs=0.001)
+
+
 @pytest.mark.parametrize("params", [
     {"track": 6, "db": 6.0}, {"track": 6, "db": -200}, {"track": 6, "db": "loud"},
     {"track": 6}, {"track": 99, "db": -6.0},
@@ -268,19 +292,122 @@ def test_a_track_level_out_of_range_is_refused(controller, fl_modules, params):
     fl_modules["mixer"].setTrackVolume.assert_not_called()
 
 
+def _faders(mixer, positions, lagging=()):
+    """A mixer whose `lagging` tracks answer with the position they had before the command."""
+    mixer.trackCount.return_value = 18
+    faders = {t: positions.get(t, 0.8) for t in range(18)}
+    shown = dict(faders)
+
+    def move(track, volume):
+        faders[track] = volume
+        if track not in lagging:
+            shown[track] = volume
+
+    mixer.setTrackVolume.side_effect = move
+    mixer.getTrackVolume.side_effect = lambda track, mode=0: (
+        (shown[track] - 0.8) * 40 if mode else shown[track])
+    return faders
+
+
+def test_an_insert_whose_reading_lags_gets_its_level_found_on_another(controller, fl_modules):
+    # seen live: an insert carrying five effects read one stale value, and the
+    # search left its fader at -76 dB
+    faders = _faders(fl_modules["mixer"], {1: 0.7, 15: 0.8}, lagging={15})
+
+    result = controller.dispatch_command("mixer.setTrackVolumeDb", {"track": 15, "db": -4.0})
+
+    assert faders[15] == pytest.approx(0.7, abs=0.001)
+    assert faders[1] == 0.7
+    assert result["volume_db"] == pytest.approx(-4.0, abs=0.001)
+
+
+def test_a_level_is_refused_when_no_reading_follows_its_fader(controller, fl_modules):
+    faders = _faders(fl_modules["mixer"], {6: 0.6}, lagging=set(range(18)))
+
+    result = controller.dispatch_command("mixer.setTrackVolumeDb", {"track": 6, "db": -4.0})
+
+    assert "error" in result
+    assert faders[6] == 0.6
+    assert all(faders[t] == 0.8 for t in range(18) if t != 6)
+
+
 def test_a_failed_level_search_puts_the_fader_back(controller, fl_modules):
     mixer = fl_modules["mixer"]
-    mixer.trackCount.return_value = 18
-    moves: list[float] = []
-    mixer.setTrackVolume.side_effect = lambda track, volume: moves.append(volume)
+    faders = _faders(mixer, {6: 0.7})
+    law = mixer.getTrackVolume.side_effect
+    readings = {"n": 0}
 
     def read(track, mode=0):
         if mode:
-            raise RuntimeError("FL is busy")
-        return 0.8
+            readings["n"] += 1
+            if readings["n"] > len(controller.FADER_CHECK_POSITIONS):  # the search, not the check
+                raise RuntimeError("FL is busy")
+        return law(track, mode)
 
     mixer.getTrackVolume.side_effect = read
 
     with pytest.raises(RuntimeError):
         controller.handle_mixer_set_track_volume_db({"track": 6, "db": -6.0})
-    assert moves == [0.5, 0.8]
+    assert faders[6] == 0.7
+
+
+@pytest.fixture
+def routes(fl_modules):
+    """Mixer of 16 inserts whose routes are kept as (source, destination) pairs."""
+    mixer = fl_modules["mixer"]
+    mixer.trackCount.return_value = 18  # master, 16 inserts, "current"
+    sends = {(t, 0) for t in range(1, 17)}
+
+    def route(track, dest, on, *rest):
+        (sends.add if on else sends.discard)((track, dest))
+
+    mixer.setRouteTo.side_effect = route
+    mixer.getRouteSendActive.side_effect = lambda track, dest: (track, dest) in sends
+    levels = {}
+    mixer.setRouteToLevel.side_effect = lambda track, dest, level: levels.update(
+        {(track, dest): level})
+    mixer.getRouteToLevel.side_effect = lambda track, dest: levels.get((track, dest), 0.8)
+    return sends
+
+
+def test_a_track_routed_to_a_bus_leaves_the_master(controller, routes):
+    result = controller.dispatch_command("mixer.routeTrack", {"track": 2, "to": 16})
+
+    assert result == {"track": 2, "to": 16, "routes": [16]}
+    assert (2, 16) in routes and (2, 0) not in routes
+
+
+def test_routing_back_to_the_master_leaves_the_bus(controller, routes):
+    controller.dispatch_command("mixer.routeTrack", {"track": 2, "to": 16})
+
+    result = controller.dispatch_command("mixer.routeTrack", {"track": 2, "to": 0})
+
+    assert result == {"track": 2, "to": 0, "routes": [0]}
+    assert (2, 0) in routes and (2, 16) not in routes
+
+
+@pytest.mark.parametrize("track, to", [(0, 3), (17, 0), (3, 3), (3, 18)])
+def test_the_master_the_current_track_and_loops_are_refused(controller, routes, track, to):
+    result = controller.dispatch_command("mixer.routeTrack", {"track": track, "to": to})
+
+    assert "error" in result
+    assert (3, 3) not in routes
+
+
+def test_a_send_keeps_the_other_routes_and_sets_its_level(controller, routes):
+    controller.dispatch_command("mixer.routeTrack", {"track": 1, "to": 16})
+
+    result = controller.dispatch_command(
+        "mixer.routeTrack", {"track": 1, "to": 2, "only": False, "level": 0.0})
+
+    assert result == {"track": 1, "to": 2, "routes": [2, 16], "level": 0.0}
+    assert {(1, 2), (1, 16)} <= routes
+
+
+@pytest.mark.parametrize("level", [-0.1, 1.5, True, "loud"])
+def test_a_level_outside_0_to_1_is_refused(controller, routes, level):
+    result = controller.dispatch_command(
+        "mixer.routeTrack", {"track": 1, "to": 2, "only": False, "level": level})
+
+    assert "error" in result
+    assert (1, 2) not in routes

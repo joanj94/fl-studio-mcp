@@ -26,6 +26,12 @@ RENDER_WINDOW_CLASS = "TWAVRenderForm"
 SYSTEM_DIALOG_CLASS = "#32770"
 PIANO_ROLL_TITLE = "Piano roll"
 PLAYLIST_TITLE = "Playlist"
+CHANNEL_RACK_TITLE = "Channel rack"
+BROWSER_TITLE = "Browser"
+BROWSER_TREE_CLASS = "TDataBrowserTree"  # the browser's list of folders and files
+# A point on the browser tree's first row (pixels from the tree's top-left corner).
+BROWSER_ROW_OFFSET = (60, 10)
+CHANNEL_LIST_CLASS = "TVectorPanel"  # the rack's list of channels (and some of its bars)
 EDITOR_PANEL_CLASS = "TEventEditForm"  # the piano roll's and the playlist's window
 # In the playlist: the box above the track headers, left of the time ruler.
 PLAYLIST_CORNER_CLASS = "TWPControl"
@@ -41,6 +47,9 @@ _WM_KEYUP = 0x0101
 _WM_LBUTTONDOWN = 0x0201
 _WM_LBUTTONUP = 0x0202
 _MK_LBUTTON = 0x0001
+_WM_RBUTTONDOWN = 0x0204
+_WM_RBUTTONUP = 0x0205
+_MK_RBUTTON = 0x0002
 _WM_CLOSE = 0x0010
 _WM_SETTEXT = 0x000C
 _WM_COMMAND = 0x0111
@@ -63,6 +72,8 @@ VK_DOWN = 0x28
 PLUGIN_WINDOW_CLASS = "TPluginForm"
 # FL's own message boxes ("... is not included in the edition you are testing", questions).
 MESSAGE_WINDOW_CLASS = "TMsgForm"
+MESSAGE_BUTTON_CLASS = "TQuickFocusBtn"  # its buttons, e.g. Ok and Cancel, left to right
+MESSAGE_BUTTON_OFFSET = (20, 12)  # a point inside a button
 # The settings window of a piano roll script that has one (the stock scripts do).
 SCRIPT_DIALOG_CLASS = "TScriptDialog"
 # Seen live: after an entry is chosen FL acts at once, but the menu's window fades
@@ -271,6 +282,25 @@ def close_messages() -> int:
     return len(messages)
 
 
+def click_message_button(position: int) -> bool:
+    """Click a button of FL's message box, counted from the left (-1 is the last one).
+
+    Seen live: the box ignores a posted Enter, but its buttons take a posted
+    click. False unless exactly one box is open and it has that button.
+    """
+    user32, kernel32 = win_focus._libraries()
+    messages = top_level_handles(user32, kernel32, MESSAGE_WINDOW_CLASS)
+    if len(messages) != 1:
+        return False
+    buttons = sorted(
+        _visible_children(user32, messages[0], MESSAGE_BUTTON_CLASS),
+        key=lambda hwnd: _rect(user32, hwnd)[0],
+    )
+    if not -len(buttons) <= position < len(buttons):
+        return False
+    return _post_click(user32, buttons[position], MESSAGE_BUTTON_OFFSET)
+
+
 def close_windows(class_name: str) -> None:
     """Ask FL's top-level windows of a class to close."""
     user32, kernel32 = win_focus._libraries()
@@ -360,6 +390,62 @@ def click_playlist_menu_arrow() -> bool:
     user32, kernel32 = win_focus._libraries()
     main = win_focus.find_fl_window(user32, kernel32)
     return main is not None and click_panel_menu_arrow(user32, main, PLAYLIST_TITLE)
+
+
+def click_channel_rack_menu_arrow() -> bool:
+    """Open the channel rack's menu. False if no channel rack is showing."""
+    user32, kernel32 = win_focus._libraries()
+    main = win_focus.find_fl_window(user32, kernel32)
+    return main is not None and click_panel_menu_arrow(user32, main, CHANNEL_RACK_TITLE)
+
+
+def click_browser_menu_arrow() -> bool:
+    """Open the browser's menu. False if no browser is showing."""
+    user32, kernel32 = win_focus._libraries()
+    main = win_focus.find_fl_window(user32, kernel32)
+    return main is not None and click_panel_menu_arrow(user32, main, BROWSER_TITLE)
+
+
+def click_browser_tree() -> bool:
+    """Click the browser tree's first row, which gives the browser a cursor again."""
+    user32, kernel32 = win_focus._libraries()
+    main = win_focus.find_fl_window(user32, kernel32)
+    if main is None:
+        return False
+    trees = _visible_children(user32, main, BROWSER_TREE_CLASS)
+    return bool(trees) and _post_click(user32, trees[0], BROWSER_ROW_OFFSET)
+
+
+def channel_list_panel() -> tuple[int, int] | None:
+    """Handle and height of the channel rack's list of channels; None if no rack is showing.
+
+    Seen live: the rack's form has several `TVectorPanel` children; the list with
+    the channel buttons and steps is the largest one showing.
+    """
+    user32, kernel32 = win_focus._libraries()
+    main = win_focus.find_fl_window(user32, kernel32)
+    found = None if main is None else panel_caption(user32, main, CHANNEL_RACK_TITLE)
+    if found is None:
+        return None
+    rack = user32.GetParent(wintypes.HWND(found[0]))
+    panels = [
+        (bottom - top, right - left, hwnd)
+        for hwnd in _visible_children(user32, rack, CHANNEL_LIST_CLASS)
+        for left, top, right, bottom in [_rect(user32, hwnd)]
+    ]
+    if not panels:
+        return None
+    height, _width, hwnd = max(panels, key=lambda panel: panel[0] * panel[1])
+    return hwnd, height
+
+
+def right_click_in_window(hwnd: int, x: int, y: int) -> bool:
+    """Right-click at a point of one of FL's windows (its own coordinates), by posted message."""
+    user32, _ = win_focus._libraries()
+    target = wintypes.HWND(hwnd)
+    position = (y << 16) | x
+    sent = user32.PostMessageW(target, _WM_RBUTTONDOWN, _MK_RBUTTON, position)
+    return bool(sent and user32.PostMessageW(target, _WM_RBUTTONUP, 0, position))
 
 
 def popup_menu_count() -> int:

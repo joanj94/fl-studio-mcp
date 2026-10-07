@@ -78,8 +78,26 @@ def test_a_gap_shorter_than_the_pattern_or_a_section_too_short_is_refused():
                   _lengths(), 4)
 
 
+def test_a_pattern_started_every_so_many_bars_can_start_later_in_its_section():
+    # A 4-bar build in the second half of an 8-bar section.
+    sections = _sections([
+        {"bars": 4, "patterns": [1]},
+        {"bars": 8, "patterns": [{"pattern": 2, "every_bars": 8, "from_bar": 5}]},
+    ])
+
+    assert clip_bars(sections, _lengths(), 4) == {1: [1, 2, 3, 4], 2: [9]}
+
+
+def test_a_later_start_that_leaves_no_room_is_refused():
+    with pytest.raises(ValueError, match="doesn't fit"):
+        clip_bars(_sections([{"bars": 8, "patterns": [
+            {"pattern": 2, "every_bars": 8, "from_bar": 6}]}]), _lengths(), 4)
+
+
 @pytest.mark.parametrize("entry", [0, "1", {"pattern": 1}, {"pattern": 1, "every_bars": 0},
-                                   {"pattern": 1, "every_bars": 4, "x": 1}])
+                                   {"pattern": 1, "every_bars": 4, "x": 1},
+                                   {"pattern": 1, "every_bars": 4, "from_bar": 0},
+                                   {"pattern": 1, "from_bar": 2}])
 def test_a_pattern_entry_must_be_an_index_or_a_pattern_with_its_gap(entry):
     with pytest.raises(ValueError, match="'patterns' must be a list"):
         _sections([{"bars": 4, "patterns": [entry]}])
@@ -295,6 +313,18 @@ def test_a_lost_connection_is_reported(tools, fl, monkeypatch):
     monkeypatch.setattr(fl, "send_command", send)
 
     assert tools["fl_arrange"](SONG) == {"error": "MIDI port closed"}
+
+
+def test_a_mute_follows_its_pattern_to_its_new_track(tools, fl):
+    # Before: Riff on track 2 (muted), Drums on track 3 (playing), track 1 muted and empty.
+    fl.pattern_names = {1: "Drums", 2: "Riff", 3: "Chords"}
+    fl.track_names = {2: "Riff", 3: "Drums"}
+    fl.muted_tracks = {1, 2, 9}
+
+    tools["fl_arrange"](SONG, replace=True)
+
+    # Now Drums on 1, Chords on 2, Riff on 3; track 9 isn't the arrangement's business.
+    assert fl.muted_tracks == {3, 9}
 
 
 def test_the_playlist_can_be_read(tools, fl):

@@ -384,10 +384,11 @@ def register_browser_tools(mcp: FastMCP) -> None:
         """Add a channel from a browser file: a sample, an instrument preset or a plugin.
 
         A sample (.wav ...) becomes a Sampler channel playing it; a preset
-        (.fst under "Channel presets" or "Plugin presets/Generators") loads its
-        plugin with that sound; a file under "Plugin database/Generators" loads
-        the plugin with its default sound. The channel lands at the end of the
-        rack, not routed to a mixer track (see fl_route_channel_to_mixer).
+        (.fst under "Channel presets" or "Plugin presets/Generators", or a
+        Morphine .mrp) loads its plugin with that sound; a file under
+        "Plugin database/Generators" loads the plugin with its default sound.
+        The channel lands at the end of the rack, not routed to a mixer track
+        (see fl_route_channel_to_mixer).
         Windows only. FL Studio needn't be in front.
 
         Args:

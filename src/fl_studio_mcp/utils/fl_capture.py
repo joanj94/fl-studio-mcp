@@ -102,6 +102,13 @@ def _window_pixels(user32, hwnd: int) -> tuple[int, int, bytes]:
     return width, height, pixels.raw
 
 
+def menu_pixels() -> tuple[int, int, bytes] | None:
+    """Width, height and pixels (blue, green, red, unused) of FL's outermost open popup menu."""
+    user32, kernel32 = win_focus._libraries()
+    menus = fl_windows.open_menus(user32, kernel32)
+    return _window_pixels(user32, menus[0]) if menus else None
+
+
 def capture(panel: str = "all") -> tuple[int, int, bytes]:
     """Width, height and PNG of FL's main window, or of one panel in it; raises CaptureError."""
     if platform.system() != "Windows":

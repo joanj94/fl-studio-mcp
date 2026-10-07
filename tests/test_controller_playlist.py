@@ -71,6 +71,20 @@ def test_tracks_are_deselected_named_and_listed(controller, fl):
     ]
 
 
+def test_a_track_is_muted_and_unmuted_and_read_back(controller, fl):
+    fl["playlist"].isTrackMuted.return_value = 1
+
+    result = controller.dispatch_command("playlist.setTrackMuted", {"track": 3, "muted": True})
+
+    fl["playlist"].muteTrack.assert_called_once_with(3, 1)
+    assert result == {"track": 3, "is_muted": True}
+    controller.dispatch_command("playlist.setTrackMuted", {"track": 3, "muted": False})
+    fl["playlist"].muteTrack.assert_called_with(3, 0)
+    assert "error" in controller.dispatch_command("playlist.setTrackMuted", {"track": 0})
+    assert "error" in controller.dispatch_command(
+        "playlist.setTrackMuted", {"track": 3, "muted": "yes"})
+
+
 def test_the_song_position_is_read_in_ticks(controller, fl):
     fl["transport"].getSongPos.return_value = 768
 

@@ -22,11 +22,18 @@ logger = logging.getLogger(__name__)
 
 WINDOW_TIMEOUT = 5.0  # seconds for a menu or dialog to open
 POLL_INTERVAL = 0.05
-# End goes to the File menu's last entry, Exit; above it are Revert to last backup
-# and then Export. Neither of the first two has a submenu, so Right opening one
-# confirms the walk. "Wave file..." is the Export submenu's first entry (Home).
-# Home and End work from wherever the highlight is: the mouse pointer moves it.
-UPS_FROM_EXIT_TO_EXPORT = 2
+MENU_CLICKS = 3
+MENU_CLICK_TIMEOUT = 0.5  # seconds the File menu gets to open after a click
+SUBMENU_TIMEOUT = 1.0  # seconds for Right to open a submenu or move on to the next menu
+# End goes to the File menu's last entry, Exit; above it are Revert to last backup,
+# the recent projects (none until the project has been saved; seen live: one entry
+# after the first save) and then Export. None of those has a submenu, so Export is
+# the first entry from the end where Right opens one. "Wave file..." is the Export
+# submenu's first entry (Home). Home and End work from wherever the highlight is:
+# the mouse pointer moves it.
+MAX_UPS_FROM_EXIT_TO_EXPORT = 24
+# The Export submenu starts with "Wave file...", "MP3 file...": entries down from the first.
+EXPORT_ENTRIES = {".wav": 0, ".mp3": 1}
 RESTORE_DELAY = 0.5  # seconds FL gets to draw its window after being un-minimized
 
 
@@ -81,22 +88,50 @@ def _submenu_opened_low() -> bool:
     return submenu_top > (top + bottom) / 2
 
 
-def _open_save_dialog() -> None:
-    """File > Export > Wave file: leaves FL's Save dialog open."""
-    if not fl_windows.click_main_menu() or not _wait_for_menus(1):
+def _opens_submenu(ups: int) -> bool:
+    """Open the File menu, go `ups` entries up from Exit and press Right: did a submenu open?
+
+    On an entry without a submenu, Right moves on to the menu bar's next menu: still
+    one menu open, but another one, which is how the miss is seen at once. The menu
+    is then closed.
+    """
+    # Seen live: after a menu opened from the bar was closed, the next click on FILE
+    # sometimes opens nothing; the one after it does.
+    for _ in range(MENU_CLICKS):
+        if not fl_windows.click_main_menu():
+            raise RenderError("FL Studio's File menu did not open")
+        if _wait_until(lambda: fl_windows.popup_menu_count() == 1, MENU_CLICK_TIMEOUT):
+            break
+    else:
         raise RenderError("FL Studio's File menu did not open")
-    for key in [fl_windows.VK_END] + [fl_windows.VK_UP] * UPS_FROM_EXIT_TO_EXPORT:
+    file_menu = fl_windows.popup_menu_rects()
+    for key in [fl_windows.VK_END] + [fl_windows.VK_UP] * ups + [fl_windows.VK_RIGHT]:
         if not fl_windows.press_in_popup_menu(key, menus=1):
             raise RenderError("FL Studio's File menu closed unexpectedly")
-    if not fl_windows.press_in_popup_menu(fl_windows.VK_RIGHT, menus=1) or not _wait_for_menus(2):
-        raise RenderError("The Export submenu was not where it was expected in the File menu")
+    _wait_until(
+        lambda: fl_windows.popup_menu_count() != 1 or fl_windows.popup_menu_rects() != file_menu,
+        SUBMENU_TIMEOUT,
+    )
+    if fl_windows.popup_menu_count() == 2:
+        return True
+    fl_windows.close_popup_menus()
+    if not _wait_for_menus(0):
+        raise RenderError("FL Studio's menu did not close")
+    return False
+
+
+def _open_save_dialog(entry: int) -> None:
+    """File > Export > the entry that many below the first: leaves FL's Save dialog open."""
+    if not any(_opens_submenu(ups) for ups in range(1, MAX_UPS_FROM_EXIT_TO_EXPORT + 1)):
+        raise RenderError("The Export submenu was not found in FL Studio's File menu")
     if not _submenu_opened_low():
         raise RenderError(
             "The submenu that opened is not where the File menu's Export entry is, so nothing "
             "was chosen in it"
         )
-    if not fl_windows.press_in_popup_menu(fl_windows.VK_HOME, menus=2):
-        raise RenderError("FL Studio's Export menu closed unexpectedly")
+    for key in [fl_windows.VK_HOME] + [fl_windows.VK_DOWN] * entry:
+        if not fl_windows.press_in_popup_menu(key, menus=2):
+            raise RenderError("FL Studio's Export menu closed unexpectedly")
     if fl_windows.pointer_over_menu():
         raise RenderError(
             "The mouse pointer is over FL Studio's menu, where it moves the highlight, so "
@@ -115,14 +150,18 @@ def _clean_up() -> None:
     fl_windows.close_windows(fl_windows.RENDER_WINDOW_CLASS)
 
 
-def render_wav(path: Path, timeout: float) -> float:
+def render_audio(path: Path, timeout: float) -> float:
     """Render what FL would play (pattern or song, per its mode) to `path`.
 
-    `path` must not exist yet, so FL never asks to overwrite. Returns the
-    seconds the render took. Raises RenderError with the reason otherwise.
+    The file's suffix picks the format (.wav or .mp3). `path` must not exist
+    yet, so FL never asks to overwrite. Returns the seconds the render took.
+    Raises RenderError with the reason otherwise.
     """
     if platform.system() != "Windows":
         raise RenderError("Rendering is only supported on Windows")
+    entry = EXPORT_ENTRIES.get(path.suffix.lower())
+    if entry is None:
+        raise RenderError(f"The render path must end in .wav or .mp3, got {path.name!r}")
     if path.exists():
         raise RenderError(f"{path} already exists; pick another file name")
     if not path.parent.is_dir():
@@ -137,7 +176,7 @@ def render_wav(path: Path, timeout: float) -> float:
             if busy:
                 raise RenderError(f"Cannot start a render while {busy}")
             try:
-                _open_save_dialog()
+                _open_save_dialog(entry)
                 # The dialog's window shows up before its file name box does.
                 if not _wait_until(
                     lambda: fl_windows.confirm_dialog_with_file_name(str(path)), WINDOW_TIMEOUT
