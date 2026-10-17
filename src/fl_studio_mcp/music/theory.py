@@ -30,8 +30,56 @@ SCALES: dict[str, tuple[int, ...]] = {
     "blues": (0, 3, 5, 6, 7, 10),
     "whole_tone": (0, 2, 4, 6, 8, 10),
     "chromatic": tuple(range(12)),
+    # More modes and symmetric scales
+    "major_blues": (0, 2, 3, 4, 7, 9),
+    "mixolydian_b6": (0, 2, 4, 5, 7, 8, 10),
+    "lydian_dominant": (0, 2, 4, 6, 7, 9, 10),
+    "altered": (0, 1, 3, 4, 6, 8, 10),
+    "double_harmonic": (0, 1, 4, 5, 7, 8, 11),
+    "neapolitan_minor": (0, 1, 3, 5, 7, 8, 11),
+    "neapolitan_major": (0, 1, 3, 5, 7, 9, 11),
+    "ukrainian_dorian": (0, 2, 3, 6, 7, 9, 10),
+    "persian": (0, 1, 4, 5, 6, 8, 11),
+    "enigmatic": (0, 1, 4, 6, 8, 10, 11),
+    "prometheus": (0, 2, 4, 6, 9, 10),
+    "augmented": (0, 3, 4, 7, 8, 11),
+    "diminished": (0, 2, 3, 5, 6, 8, 9, 11),
+    "dominant_diminished": (0, 1, 3, 4, 6, 7, 9, 10),
+    "bebop_dominant": (0, 2, 4, 5, 7, 9, 10, 11),
+    "egyptian": (0, 2, 5, 7, 10),
+    # Japanese pentatonics
+    "hirajoshi": (0, 2, 3, 7, 8),
+    "in": (0, 1, 5, 7, 8),
+    "yo": (0, 2, 5, 7, 9),
+    "iwato": (0, 1, 5, 6, 10),
+    # Hindustani thaats (the seven-note parents of most ragas) and pentatonic ragas
+    "kalyan": (0, 2, 4, 6, 7, 9, 11),
+    "bilawal": (0, 2, 4, 5, 7, 9, 11),
+    "khamaj": (0, 2, 4, 5, 7, 9, 10),
+    "kafi": (0, 2, 3, 5, 7, 9, 10),
+    "asavari": (0, 2, 3, 5, 7, 8, 10),
+    "bhairavi": (0, 1, 3, 5, 7, 8, 10),
+    "bhairav": (0, 1, 4, 5, 7, 8, 11),
+    "marwa": (0, 1, 4, 6, 7, 9, 11),
+    "purvi": (0, 1, 4, 6, 7, 8, 11),
+    "todi": (0, 1, 3, 6, 7, 8, 11),
+    "bhupali": (0, 2, 4, 7, 9),
+    "durga": (0, 2, 5, 7, 9),
+    "malkauns": (0, 3, 5, 8, 10),
+    "hindol": (0, 4, 6, 9, 11),
+    # Maqamat without quarter tones (rast, bayati and saba need them: not here)
+    "hijaz": (0, 1, 4, 5, 7, 8, 10),
+    "hijaz_kar": (0, 1, 4, 5, 7, 8, 11),
+    "nahawand": (0, 2, 3, 5, 7, 8, 11),
+    "kurd": (0, 1, 3, 5, 7, 8, 10),
+    "nikriz": (0, 2, 3, 6, 7, 9, 10),
+    "ajam": (0, 2, 4, 5, 7, 9, 11),
 }
-SCALE_ALIASES = {"ionian": "major", "aeolian": "minor", "natural_minor": "minor"}
+SCALE_ALIASES = {
+    "ionian": "major", "aeolian": "minor", "natural_minor": "minor",
+    "super_locrian": "altered", "byzantine": "double_harmonic", "octatonic": "diminished",
+    "miyako_bushi": "in",
+}
 
 # MIDI 0-127 spans about 10.6 octaves; anything beyond this can't fit.
 MAX_OCTAVES = 11

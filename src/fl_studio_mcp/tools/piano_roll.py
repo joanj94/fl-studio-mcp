@@ -278,6 +278,31 @@ def write_notes(notes: list[dict], channel: int, pattern: int) -> None:
         raise ValueError(message.strip())
 
 
+def quantized(notes: list[dict], grid: float, strength: float = 1.0,
+              ends: bool = False) -> list[dict]:
+    """New note dicts with starts moved toward the grid (and ends, with `ends`).
+
+    Every other field is kept. With `ends`, a note keeps at least one grid step;
+    step hits (length 0) stay 0.
+    """
+    if not grid > 0 or not 0 <= strength <= 1:
+        raise ValueError("grid must be positive and strength 0-1")
+
+    def toward(value: float) -> float:
+        return value + (round(value / grid) * grid - value) * strength
+
+    result = []
+    for note in notes:
+        start = note.get("time", 0)
+        length = note.get("duration", 0)
+        new_start = max(0.0, toward(start))
+        new_length = length
+        if ends and length > 0:
+            new_length = max(toward(start + length) - new_start, min(grid, length))
+        result.append({**note, "time": round(new_start, 6), "duration": round(new_length, 6)})
+    return result
+
+
 def _select_target(channel: int | str | None, pattern: int | None) -> str | None:
     """Make the channel, then the pattern, active so the piano roll edits them.
 
@@ -546,6 +571,38 @@ def register_piano_roll_tools(mcp: FastMCP) -> None:
                     note["note_name"] = _midi_to_note_name(note["midi"])
 
         return state
+
+    @mcp.tool()
+    def fl_quantize_notes(channel: int | str, pattern: int, grid: float = 0.25,
+                          strength: float = 1.0, ends: bool = False) -> dict:
+        """Snap the notes already in a channel's piano roll to a grid.
+
+        Reads the notes fresh from FL, moves them and writes them back; pitch,
+        velocity and the other note properties stay as they were.
+
+        Args:
+            channel: Channel index or role.
+            pattern: Pattern index (1-based).
+            grid: Grid in beats: 0.25 = 16ths, 0.5 = 8ths, 1 = quarter notes,
+                1/3 = 8th-note triplets.
+            strength: 1 moves notes onto the grid, 0.5 half-way there.
+            ends: Also snap where notes end.
+
+        Returns {"notes": count, "moved": count} or {"error"}.
+        """
+        try:
+            index = resolve_channel(channel)
+            notes = read_notes(index, pattern)
+            snapped = quantized(notes, grid, strength, ends)
+            moved = sum(
+                1 for old, new in zip(notes, snapped)
+                if (old.get("time"), old.get("duration")) != (new["time"], new["duration"])
+            )
+            if moved:
+                write_notes(snapped, index, pattern)
+        except ValueError as e:
+            return {"error": str(e)}
+        return {"notes": len(notes), "moved": moved}
 
     @mcp.tool()
     def fl_clear_request_queue() -> str:

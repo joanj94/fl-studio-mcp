@@ -1,263 +1,98 @@
 # FL Studio MCP Server
 
-An MCP (Model Context Protocol) server that lets AI assistants control FL Studio (transport, mixer, channel rack, plugins and piano roll) through MIDI communication and Piano Roll scripts.
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
+[![MCP](https://img.shields.io/badge/MCP-server-8A2BE2)](https://modelcontextprotocol.io)
+[![FL Studio](https://img.shields.io/badge/FL%20Studio-20.7%2B%20%C2%B7%20tested%20on%202026-orange)](https://www.image-line.com/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-This is a fork of [karl-andres/fl-studio-mcp](https://github.com/karl-andres/fl-studio-mcp). The goal is a **genre-agnostic toolkit** that any MCP-compatible AI can use to write any melody or style in FL Studio. The server provides precise, musically-expressed building blocks, and the AI makes the musical decisions. Hardcore/hardstyle is the first style used to test it; no genre logic lives in the server code.
+An [MCP](https://modelcontextprotocol.io) server that lets an AI assistant (Claude, Cursor, Gemini CLI, Codex, ...) **produce music in FL Studio**. It can write notes and drum patterns, load sounds and effects from the browser, lay the song out in the playlist, automate parameters, mix, render, and listen back to its own render.
 
-> **Status:** early development. The foundation, music toolkit, FL control (tempo, patterns, targeted notes), roles and style packs are done; render and analysis is next. See [Roadmap](#roadmap).
+It offers **138 tools**. They work on the FL Studio window you already have open, and FL can stay in the background while they run.
 
-## Features
+```text
+You:    "Make a 16-bar F minor intro at 150 BPM: a kick on every beat, a sub bass on the
+         root, and a lead playing i-VI-III-VII. Arrange it, render it and check the mix."
 
-### Project and Patterns
-
-- One-call project overview: tempo, PPQ, time signature, patterns, channels, mixer track count, loop mode
-- Get/set tempo (decimals allowed)
-- List, select, rename patterns and find an empty one (selecting an unused pattern number creates it)
-
-### Style Packs
-
-- Optional JSON files describing a style in the toolkit's vocabulary: tempo range, scales, roles, song structure, rhythm grids, chord progressions and guidance
-- Built in: hardstyle, hardcore and lo-fi hip hop (a deliberately different style, to keep the core generic); add your own in a folder of your choice
-- Check whether the open project fits a style (tempo in range, required roles present)
-
-### Roles
-
-- Address a channel by a word in its name instead of its index: `"kick"` finds "808 Kick", `"sub bass"` finds "Sub Bass"
-- Every note and step tool accepts a role wherever it takes a channel
-- Check that a project has the parts a piece needs before writing (`fl_check_roles`)
-
-### Transport Control
-
-- Play, pause, stop playback
-- Toggle recording
-- Set playback position
-- Get song length and position
-- Control loop mode (pattern/song)
-- Adjust playback speed
-
-### Mixer Control
-
-- Get/set track volume and pan
-- Mute/solo tracks
-- Arm tracks for recording
-- Set track names and colors
-- Stereo separation control
-
-### Channel Rack Control
-
-- List all channels
-- Get/set channel properties (volume, pan, name, color)
-- Mute/solo channels
-- Route channels to mixer tracks
-- Trigger MIDI notes in real-time
-- Step sequencer control (get/set grid bits)
-- Per-step parameters: pitch, velocity, release, fine pitch, pan, mod X/Y and shift, in any pattern
-
-### Plugin Control
-
-- List plugin parameters
-- Get/set parameter values
-- Navigate presets (next/previous) and list their names
-- Query plugin info
-
-### Sounds from the Browser (Windows)
-
-- **Browse** FL Studio's browser: stock packs, your own sample folders, presets, the plugin database
-- **Load a sample, preset or instrument plugin** into a new channel, or into an existing one
-- **Add effects** to any mixer track
-- **Undo**, to take back a channel or effect
-- None of this needs FL Studio in front: nothing is typed and the mouse isn't moved
-- **Mix by numbers:** set a mixer track's level in dB, switch effects on and off, and render every channel on its own to see what it adds
-
-### Piano Roll Control
-
-- **Add notes** to the piano roll with precise timing
-- **Add chords** with a single command
-- **Delete specific notes** by MIDI number and time
-- **Clear all notes** from the piano roll
-- **Read piano roll state** to see all existing notes (fresh from FL, not a stale export)
-- **Target any channel and pattern**: every note tool takes optional `channel` and `pattern`
-- **Full note properties**: velocity, release, pan, slide, porta, muted, colour, filter cutoff/resonance and `fine_pitch` in cents
-- Runs the piano roll script for you and reports what FL Studio applied. On Windows this goes through the piano roll's menu with FL Studio left in the background; on macOS FL Studio comes to the front for a keystroke (Cmd+Opt+Y)
-
-### Music Toolkit
-
-Genre-agnostic helpers that build and transform notes **without touching FL Studio**. Their output is in the same format `fl_send_notes` accepts, so an AI can generate, combine and check material before writing it:
-
-- Scales and modes, chord symbols (`Fm7`, `C/E`) and roman numerals (`i-VI-III-VII`, `V7`, `bVII`)
-- Melodies as scale degrees (`[1, 3, 5, None, 8]`)
-- Step-grid rhythms (`X...x...|x_..x.x.`) and Euclidean rhythms (`E(3,8)`)
-- Rolls that speed up (for fills and build-ups)
-- Transforms: arpeggiate, transpose, shift, stretch, reverse, quantize, swing, humanize, snap to scale, legato, repeat, velocity ramp
-
-Pitch names use scientific notation, where **C4 = MIDI 60**. FL Studio's piano roll labels the same note C5.
-
-## Changes in this fork
-
-Compared with upstream, this fork currently adds:
-
-- **Reliable command/response protocol:** every command carries a unique id that FL echoes back, so a late or stale response is never mistaken for the current one. The server writes its JSON files atomically (retried if FL has the file open), and skips half-written responses from FL.
-- **Correct error reporting:** unknown actions and FL-side errors are now reported as failures; before, they came back as `success: true`.
-- **Piano roll confirmation:** piano roll tools wait for FL Studio to confirm which requests it processed and report notes added/deleted (or FL's error message), instead of sleeping a fixed 2 seconds and assuming success. A failing batch is dropped rather than replayed on every later trigger.
-- **Safe MIDI port selection:** the server never falls back to an arbitrary MIDI port (which could be a hardware synth); set `FL_MCP_MIDI_PORT` to choose one explicitly.
-- **OneDrive-aware paths:** the real Windows Documents folder is used everywhere (server, FL-side scripts, installer), so redirected Documents folders work.
-- **FL Studio 2026 support:** the FL-side scripts no longer use `os.replace`, which breaks FL 2026's embedded Python.
-- **More FL control:** tempo, project overview, patterns, per-step parameters, and piano roll notes aimed at a chosen channel and pattern with full note properties.
-- **Things the API can't do (Windows):** loading samples, presets, instrument plugins and effects from FL's browser, and running the piano roll script, all without FL Studio coming to the front: the browser is driven through the API, and the few clicks and keys needed are posted to FL's own menus. Rendering to WAV goes through FL's own export dialog the same way. Every step is checked (the expected menu, dialog or window must be open) before the next one.
-- **Arrangement and feedback:** `fl_arrange` lays a song out in the playlist (one playlist track per pattern, clips placed section by section), `fl_render` / `audio_analyze` measure the result (loudness, peaks, frequency balance, stereo image, key), and `fl_screenshot` shows FL's window.
-- **Test suite:** pytest with the FL Studio API faked, so it runs without FL Studio. It includes a contract test that checks every tool against the FL-side controller script.
-
-## Roadmap
-
-1. **Foundation**: reliable protocol, tests, port and path handling. ✅
-2. **Generic music toolkit** (pure Python): notes in musical units, scales and modes, chord symbols and roman numerals, scale-degree melodies, rhythm grids and Euclidean rhythms, rolls, transforms (arpeggiate, transpose, quantize, swing, humanize, ...). ✅
-3. **More FL control**: tempo, project overview, pattern selection, per-step parameters, writing notes into a specific channel and pattern, and full note properties (slide, porta, pan, fine pitch). ✅
-4. **Roles and templates**: refer to instruments by role (`"kick"`, `"lead"`, …) instead of channel numbers, based on a template project you prepare. ✅
-5. **Style packs**: optional data files describing a genre (tempo range, structure, idioms); hardstyle, hardcore and lo-fi hip hop to start, the last one to keep the core generic. ✅
-6. **Render and analysis**: render through FL's export dialog and give the AI feedback on loudness, peaks, frequency balance, stereo image and key. ✅
-
-## Important Limitations
-
-These come from FL Studio's scripting API, not from this server:
-
-- **The API can't load anything or create channels.** On Windows the server does it through FL's browser instead (`fl_load_in_new_channel`, `fl_load_in_channel`, `fl_add_effect`, `fl_add_channel`): it moves the browser's cursor to the file and picks "Open in new channel" or "Send to selected channel" from the file's menu. That covers everything the browser shows, which excludes sounds that live inside a plugin's own preset browser (third-party synths, FLEX packs other than the loaded one). Channels and effects can't be deleted, only undone (`fl_undo`). On macOS none of this works: start from a template project that has the instruments you want.
-- **Playlist clips are placed by `fl_arrange` only** (whole patterns on bar lines, the whole playlist at once, Windows); single clips can't be moved or read. **Automation can't be created.**
-- **Loading and rendering are Windows-only, and you will see FL's menus and dialogs flash.** They never take the keyboard, the mouse or the focus, so you can keep working in another program. The loading tools close FL's open plugin windows (FL would otherwise load into the plugin whose window is open), leave the browser's folders closed, and un-minimize FL Studio if it is minimized (behind your other windows, without focus).
-- **Time signature is read-only.** The overview reports it; set it in FL Studio yourself.
-- **Real-time notes aren't saved.** `fl_trigger_note` plays a note live; it only ends up in the project if FL Studio is recording. Use the piano roll or step sequencer tools to write notes permanently.
-
-## Requirements
-
-- **FL Studio 20.7+** (MIDI Controller Scripting API) and a version with Python piano roll scripting (**Tools > Scripting**) for the piano roll tools
-- **Python 3.10+** (the Windows installer uses Python 3.12, which has prebuilt `python-rtmidi` wheels)
-- **Windows** or **macOS**
-  - Windows: [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html)
-  - macOS: IAC Driver (built-in, needs to be enabled)
-
-## Which AI Clients Work With This?
-
-This is a standard [MCP](https://modelcontextprotocol.io) server that talks to clients over stdio. It isn't tied to any AI vendor, so **any MCP-compatible client can connect**: Claude Desktop, Claude Code, Cursor, Windsurf, Gemini CLI, OpenAI Codex CLI, and others.
-
-The installers auto-configure only **Claude Desktop** and **Claude Code** (`scripts/install_mcp_for_claude.ps1` / `.sh`). For any other client, add an equivalent server entry to its MCP config:
-
-```json
-{
-  "command": "uv",
-  "args": ["run", "--directory", "/path/to/fl-studio-mcp", "fl-studio-mcp"]
-}
+The AI: fl_set_tempo → fl_browser_search "kick" → fl_load_in_new_channel → music_chords
+        → music_transform (arpeggiate) → fl_send_notes → fl_arrange → fl_render_stems
+        → fl_diagnose_mix → fl_gain_stage → fl_render "intro.mp3"
 ```
 
-Adjust `/path/to/fl-studio-mcp` to your local clone.
+This is a fork of [karl-andres/fl-studio-mcp](https://github.com/karl-andres/fl-studio-mcp) (see it for a demo video). The core is **genre-agnostic**: it supplies precise musical building blocks, and the AI makes the musical decisions. Genre knowledge lives only in optional JSON *style packs*.
 
-## Quick Installation
+---
 
-### Windows
+## Contents
 
-```powershell
-# Clone the repository
-git clone https://github.com/joanj94/fl-studio-mcp.git
-cd fl-studio-mcp
+- [What it can do](#what-it-can-do)
+- [Platform support](#platform-support)
+- [Quick start](#quick-start)
+- [Manual installation](#manual-installation)
+- [Using it](#using-it)
+- [Tool reference](#tool-reference)
+- [How it works](#how-it-works)
+- [Limitations](#limitations)
+- [Troubleshooting](#troubleshooting)
+- [Development](#development)
+- [Credits](#credits)
 
-# Allow running local scripts for this user (one-time)
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
+## What it can do
 
-# Run the one-command installer
-.\install.ps1
-```
+| Area | Highlights |
+|------|-----------|
+| **Composing** | Notes, chords and drum steps in any channel and pattern, with every note property (slide, porta, pan, fine pitch, velocity, filter). There is also a pure-Python music toolkit: scales, chord symbols, roman numerals, scale-degree melodies, step grids, Euclidean rhythms, rolls, and transforms (arpeggiate, swing, humanize, quantize, ...). |
+| **Sounds** | Searches FL's browser by name, loads samples, presets and instrument plugins into new or existing channels, adds and deletes mixer effects, and deletes channels. |
+| **Arranging** | Lays the song out in the playlist (one track per pattern, section by section), adds or deletes single clips, adds time markers, clones patterns, and exports MIDI. |
+| **Automation** | Creates automation clips for volume, pan or *any* plugin parameter, with the points you give it. It can also read the automation and clips stored in a saved project. |
+| **Mixing** | Sets levels in dB and parameters by their display value ("-6 dB", "2.5 kHz"). Applies named moves ("remove_mud", "glue", "dotted_echo") and builds whole effect chains. Mutes or solos groups of tracks by name, routes tracks to buses, and keeps mix snapshots to restore later. |
+| **Listening** | Renders to WAV or MP3 through FL's own export dialog, then measures the result: loudness (ITU-R BS.1770 LUFS), peaks, frequency balance, stereo image, key and tempo. It renders per-channel stems, reports mix problems, gain-stages the tracks, reads the live meters, compares the mix with a reference track, and measures a channel's pitch to tune it. |
+| **Audio in** | Turns a recorded melody into notes and finds the tempo of an audio file. Sung vocals can be rendered from notes plus lyrics through a local [OpenUtau](https://www.openutau.com/) engine. |
+| **Seeing** | Takes screenshots of FL's window or of one panel (playlist, piano roll, mixer, ...), taken in the background. |
 
-### macOS
+The scripting API of FL Studio can't load plugins, place clips, create automation or delete effects. On Windows this server does those things anyway: it drives FL's own browser and menus with **posted window messages**. It never takes your mouse, keyboard or focus. Each step is checked (the expected menu, dialog or result must appear) before the next one runs.
 
-```bash
-# Clone the repository
-git clone https://github.com/joanj94/fl-studio-mcp.git
-cd fl-studio-mcp
+## Platform support
 
-# Run the one-command installer
-./install.sh
-```
+| Feature | Windows | macOS |
+|---------|:-------:|:-----:|
+| Transport, mixer, channels, plugins, patterns, steps | ✅ | ✅ |
+| Piano roll notes | ✅ background | ✅ FL comes to the front briefly |
+| Music toolkit, style packs, MIDI export, audio analysis | ✅ | ✅ |
+| Browser loading, effects, channel deletion | ✅ | ❌ start from a template project |
+| Playlist arrangement, clips, automation, render, screenshots, save | ✅ | ❌ |
 
-Both installers will:
+Everything was developed and tested live on **FL Studio 2026 (Windows)**, including the trial edition.
 
-1. Install [uv](https://github.com/astral-sh/uv) if not present
-2. Install Python dependencies
-3. Guide you through enabling virtual MIDI ports (loopMIDI on Windows, IAC Driver on macOS)
-4. Install the FL Studio MIDI controller script
-5. Install the Piano Roll script (ComposeWithLLM)
-6. Configure Claude Desktop or Claude Code
+## Quick start
 
-> **Piano-roll note:** on Windows the Piano Roll script is run from the piano roll's menu with FL Studio left in the background; you'll see that menu flash. If that isn't possible (no piano roll showing, or scripts kept in sub-folders) and on macOS, FL Studio is sent a keystroke instead (`Ctrl+Alt+Y` / `Cmd+Opt+Y`), which makes **FL Studio pop to the front for a moment**.
-
-## Manual Installation
-
-### 1. Install Python Dependencies
-
-```bash
-# Using uv (recommended; on Windows add --python 3.12)
-uv sync
-# Without the dev tools, add the audio analysis extra: uv sync --no-dev --extra analysis
-
-# Or using pip
-pip install -e .
-```
-
-### 2. Enable Virtual MIDI Ports
-
-#### Windows (loopMIDI)
-
-1. Install [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html), from the website or with `winget install TobiasErichsen.loopMIDI`
-2. Open loopMIDI and click **+** to create a port. The default name `loopMIDI Port` works; the server finds any port with `loopMIDI` in its name
-3. Keep loopMIDI running while using FL Studio (it can start with Windows from its tray icon)
-
-#### macOS (IAC Driver)
-
-1. Open **Audio MIDI Setup** (search in Spotlight)
-2. Press **Cmd+2** or go to **Window > Show MIDI Studio**
-3. Double-click on **IAC Driver**
-4. Check **"Device is online"**
-5. Click **Apply**
-
-### 3. Install FL Studio Scripts
-
-Copy two files into FL Studio's Settings folder, which is `<Documents>\Image-Line\FL Studio\Settings`. On Windows, "Documents" may be redirected to OneDrive; the installer handles this automatically.
-
-| File | Destination inside `Settings` |
-|------|-------------------------------|
-| `fl_controller/device_FLStudioMCP.py` | `Hardware/FLStudioMCP/` |
-| `scripts/ComposeWithLLM.pyscript` | `Piano roll scripts/` |
+**You need:** FL Studio 20.7+, [uv](https://github.com/astral-sh/uv) (the installer gets it), and a virtual MIDI port: [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html) on Windows, or the built-in IAC Driver on macOS.
 
 ```powershell
 # Windows (PowerShell)
-$settings = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "Image-Line\FL Studio\Settings"
-New-Item -ItemType Directory -Force "$settings\Hardware\FLStudioMCP" | Out-Null
-Copy-Item fl_controller\device_FLStudioMCP.py "$settings\Hardware\FLStudioMCP\"
-Copy-Item scripts\ComposeWithLLM.pyscript "$settings\Piano roll scripts\"
+git clone https://github.com/joanj94/fl-studio-mcp.git
+cd fl-studio-mcp
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force   # one-time
+.\install.ps1
 ```
 
 ```bash
 # macOS
-SETTINGS=~/Documents/Image-Line/FL\ Studio/Settings
-mkdir -p "$SETTINGS/Hardware/FLStudioMCP"
-cp fl_controller/device_FLStudioMCP.py "$SETTINGS/Hardware/FLStudioMCP/"
-cp scripts/ComposeWithLLM.pyscript "$SETTINGS/Piano roll scripts/"
+git clone https://github.com/joanj94/fl-studio-mcp.git
+cd fl-studio-mcp
+./install.sh
 ```
 
-After pulling changes to either script, copy it again; FL runs the installed copy, not the one in this repo. The piano roll script is re-read each time it runs. For the controller, reload it once from FL (View > Script output > Reload script); once it's installed, later updates can also be applied with the `dev.reloadScript` command (see Development), which makes it re-run its installed file.
+The installer installs the dependencies and walks you through creating the MIDI port. It also copies the two FL-side scripts into FL Studio's Settings folder and registers the server with Claude Desktop or Claude Code.
 
-### 4. Configure FL Studio
+**Then, in FL Studio:**
 
-1. **Restart FL Studio** (if it's running) so it finds the new controller script
-2. Go to **Options > MIDI Settings**
-3. Under **Input**, select your virtual MIDI port (e.g. "loopMIDI Port" or "IAC Driver Bus 1")
-4. Set **Controller type** to **FL Studio MCP Controller** (listed under *Scripts*)
-5. Make sure **Enable** is lit for that port
+1. Restart FL Studio.
+2. Open **Options > MIDI Settings**. Under **Input**, select your virtual port, set **Controller type** to **FL Studio MCP Controller** and make sure it is enabled. Leave **Output** alone.
+3. Ask your AI: *"Give me an overview of the open FL Studio project."*
 
-The port only needs to be enabled under **Input**. Leave it alone under **Output**: the server sends to FL Studio, never the other way.
+### Other MCP clients
 
-The piano roll tools need **Tools > Scripting > ComposeWithLLM** to have been run once per FL session from the piano roll window's own menu. On Windows the server does that itself the first time a note tool gets no answer; on macOS do it by hand (see [Piano Roll Workflow](#piano-roll-workflow)).
-
-### 5. Configure Your MCP Client
-
-For Claude Desktop, add this to its config (Windows: `%APPDATA%\Claude\claude_desktop_config.json`, macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`):
+Any MCP client that speaks stdio works. Point it at:
 
 ```json
 {
@@ -270,371 +105,391 @@ For Claude Desktop, add this to its config (Windows: `%APPDATA%\Claude\claude_de
 }
 ```
 
-For Claude Code, run `claude mcp add`. For other clients, see [Which AI Clients Work With This?](#which-ai-clients-work-with-this).
+### Optional extras
 
-### Optional environment variables
+| For | Install |
+|-----|---------|
+| Audio measurement (`fl_render`, `audio_analyze`, stems, mix check) | numpy: `uv sync --extra analysis` (included with the dev tools) |
+| Reading MP3 / FLAC / OGG files | [ffmpeg](https://ffmpeg.org/) on PATH, or `FL_MCP_FFMPEG` |
+| Sung vocals (`vocal_render`) | an `ourender` build of OpenUtau's engine plus a singer, on PATH or `FL_MCP_OURENDER` |
 
-Set these in the MCP server entry's `env` block if you need them:
+## Manual installation
+
+<details>
+<summary>Step by step, without the installer</summary>
+
+### 1. Python dependencies
+
+```bash
+uv sync                 # on Windows: uv sync --python 3.12 (python-rtmidi ships 3.12 wheels)
+# or: pip install -e ".[analysis]"
+```
+
+### 2. Virtual MIDI port
+
+- **Windows:** install loopMIDI (`winget install TobiasErichsen.loopMIDI`) and click **+** to create a port. The default name works. Keep loopMIDI running; it can start with Windows.
+- **macOS:** open **Audio MIDI Setup**, then **Window > Show MIDI Studio**. Double-click **IAC Driver**, tick **Device is online** and click **Apply**.
+
+### 3. FL-side scripts
+
+Copy both files into `<Documents>\Image-Line\FL Studio\Settings`. On Windows, Documents may be redirected to OneDrive; the installer handles that for you.
+
+| File | Destination inside `Settings` |
+|------|-------------------------------|
+| `fl_controller/device_FLStudioMCP.py` | `Hardware/FLStudioMCP/` |
+| `scripts/ComposeWithLLM.pyscript` | `Piano roll scripts/` |
+
+```powershell
+$settings = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "Image-Line\FL Studio\Settings"
+New-Item -ItemType Directory -Force "$settings\Hardware\FLStudioMCP" | Out-Null
+Copy-Item fl_controller\device_FLStudioMCP.py "$settings\Hardware\FLStudioMCP\"
+Copy-Item scripts\ComposeWithLLM.pyscript "$settings\Piano roll scripts\"
+```
+
+FL runs the installed copies, not the files in this repo, so copy them again after you update. The piano roll script is re-read on every run. Reload the controller once with **View > Script output > Reload script**; after that, the `dev.reloadScript` command reloads it (see [Development](#development)).
+
+### 4. FL Studio and the MCP client
+
+Configure FL Studio as described in [Quick start](#quick-start). For Claude Desktop, add the JSON above to `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS). For Claude Code, use `claude mcp add`.
+
+</details>
+
+### Environment variables
+
+Set these in the server entry's `env` block if you need them.
 
 | Variable | Purpose |
 |----------|---------|
-| `FL_MCP_MIDI_PORT` | MIDI output port to use (exact name or case-insensitive substring). Without it, the server picks the first port whose name contains `loopMIDI`, `IAC` or `FL`, and refuses to guess otherwise. |
-| `FL_MCP_STYLES_DIR` | Folder with your own style packs (`*.json`). A pack with the same name as a built-in one replaces it. |
-| `FL_MCP_RENDER_DIR` | Folder `fl_render` writes to by default. The default is `fl-studio-mcp` in the system's temp folder. |
-| `FL_MCP_SETTINGS_DIR` | Full path to FL Studio's `Settings` folder, if you changed FL's user data folder. The default is `<Documents>\Image-Line\FL Studio\Settings`. |
+| `FL_MCP_MIDI_PORT` | The MIDI port to use (its name or part of it). Without it, the server only picks a port named like `loopMIDI`, `IAC` or `FL`, and never guesses beyond that. |
+| `FL_MCP_SETTINGS_DIR` | FL Studio's `Settings` folder, if you moved FL's user data folder. |
+| `FL_MCP_RENDER_DIR` | The default folder for `fl_render`. |
+| `FL_MCP_STYLES_DIR` | A folder of your own style packs (`*.json`). A pack with a built-in pack's name replaces it. |
+| `FL_MCP_FFMPEG` | The ffmpeg program, if it isn't on PATH. |
+| `FL_MCP_OURENDER` | The `ourender` program for sung vocals. |
 
-## Usage
+## Using it
 
-### Running the Server Manually
+### Prepare a project (optional on Windows)
 
-```bash
-uv run fl-studio-mcp
+On Windows the AI can load sounds from FL's browser by itself. To let it use your own sample folders, add them to the browser (**Options > File settings**). A template project still saves time. It is the only way to give the AI sounds on macOS, and it is how you give it sounds the browser doesn't show (third-party synth presets).
+
+**Name channels after their role**, such as "Kick", "Sub Bass" or "Lead". Every tool that takes a channel also accepts a role: `"kick"` finds "808 Kick". Matching uses whole words and ignores case. An exact name wins, and if two channels match equally the tool reports it rather than guessing. `fl_get_roles` lists what the AI can address.
+
+### Example prompts
+
+```text
+"Give me an overview of the project, then check it has a kick, a bass and a lead."
+"Find a 909 kick in the browser and load it into a new channel called Kick."
+"Write an F minor i-VI-III-VII progression, arpeggiate it in 16ths over two octaves, put it on the lead."
+"Add a snare roll over the last 2 bars that speeds up from 8ths to 32nds and gets louder."
+"Arrange: intro 8 bars (pattern 1), build 8 bars (patterns 1+2), drop 16 bars (all patterns)."
+"Fade the lead's reverb mix in over the build with an automation clip."
+"Put a Parametric EQ on the bass track and remove the mud; then glue the drum bus."
+"Render the stems, tell me what clashes, gain-stage the mix and export the song as song.mp3."
+"Take a snapshot called 'before master', try a louder master, and restore it if it clips."
+"Here is my vocal recording: extract the melody and double it with the lead."
 ```
 
-### Piano Roll Workflow
+### Style packs
 
-1. Open FL Studio and select a channel
-2. Open the Piano Roll (F7 or double-click the channel)
-3. On Windows the server runs the script itself, every time, from the piano roll's menu. On macOS the first run in each FL session is yours, because the shortcut only re-runs the last script: use the **piano roll's own menu** (the ▸ arrow in the piano roll window's top-left corner): **Tools > Scripting > ComposeWithLLM**. FL's main Tools menu in the top bar is a different menu and doesn't list piano roll scripts
-4. The MCP tools then report what FL Studio applied
-5. The script edits the channel the piano roll window shows, in the current pattern. Pass `channel` (an index or a role) and `pattern` to the note tools and they switch the piano roll there first. You'll see the window briefly close and reopen
+A style pack is a JSON file describing a style in the toolkit's vocabulary: tempo range, scales, roles, song structure, rhythm grids, chord progressions and tips. Built-in packs live in `src/fl_studio_mcp/styles/`: hardstyle, hardcore, hardjump, jumpstyle, lento violento, and lo-fi hip hop (the last is deliberately unrelated, to keep the core generic). Add your own through `FL_MCP_STYLES_DIR`.
 
-### Style Packs
+Each pack is validated when it loads. Unknown scales, grids that don't parse, and rhythms for undeclared roles are reported by `style_list` instead of reaching the AI. Packs are read again on every call, so edits need no restart.
 
-A style pack is a JSON file in `src/fl_studio_mcp/styles/` (built in) or in the folder named by `FL_MCP_STYLES_DIR` (yours). The file name must match its `name`. Packs are starting points for the AI, not rules, and nothing about any style is hard-coded in the server. Fields:
+<details>
+<summary>Style pack fields</summary>
 
 | Field | Content |
 |-------|---------|
-| `name`, `title`, `description` | Identifier (lowercase, `-` separated), display name, one-paragraph summary |
+| `name`, `title`, `description` | Identifier (lowercase, `-` separated, equal to the file name), display name, summary |
 | `tempo` | `min`, `max`, `typical` BPM |
 | `time_signature` | e.g. `"4/4"` |
 | `scales` | Scale names from `music_reference` |
-| `roles` | `required` and `optional` role names, matched against channel names like any role |
+| `roles` | `required` and `optional` role names |
 | `structure` | Sections with `section`, `bars`, `description` |
-| `rhythms` | `name`, `role`, `grid` (music_rhythm grid syntax, 16 steps = one 4/4 bar of 16ths), `description` |
+| `rhythms` | `name`, `role`, `grid` (`music_rhythm` syntax, 16 steps = one bar of 16ths), `description` |
 | `progressions` | `chords` (roman numerals or chord symbols), `scale`, `description` |
-| `guidance` | List of plain-text tips |
+| `guidance` | Plain-text tips |
 
-Every pack is checked when loaded: unknown scales, grids that don't parse, progressions that don't resolve or rhythms for undeclared roles are reported by `style_list` instead of reaching the AI. Edits apply on the next call; no restart needed.
+</details>
 
-### Preparing a Template Project
+Pitch names are scientific: **C4 = MIDI 60**. FL's piano roll labels the same note C5.
 
-On Windows the AI can load samples, presets, plugins and effects from FL's browser by itself, so a template is optional there: add your sample folders to the browser (Options > File settings) and it can use them. A template still saves time, is the only way on macOS, and is how to give the AI sounds the browser doesn't show (third-party synth presets). Set up a project once and reuse it:
+## Tool reference
 
-1. Add a channel for each part you want the AI to write (drums, bass, lead, pads, effects…) and load your instruments and presets.
-2. **Name each channel after its role**, such as "Kick", "Sub Bass" or "Lead". A role matches whole words in a name, ignoring case and punctuation: "Kick" finds "Kick" or "808 Kick", "bass" finds "Sub Bass" but not "Bassline". An exact name always wins, so if both "Kick" and "Kick Top" exist, "kick" means "Kick". Two channels that match equally (for example two named "Pad") are reported as ambiguous, never guessed.
-3. Route each channel to its own mixer track if you want the AI to mix parts separately.
-4. Save it as a template. FL Studio lists projects saved under `Documents\Image-Line\FL Studio\Projects\Templates\<Category>\<Name>\<Name>.flp` in **File > New from template**.
+The server has 138 tools in total. Expand a group to see its tools. Tools marked **(W)** are Windows only.
 
-Ask the AI to run `fl_get_roles` to see what it can address, or `fl_check_roles` with the parts it needs.
-
-## Available Tools
-
-### Connection
+<details>
+<summary><b>Project, patterns and roles</b> (14)</summary>
 
 | Tool | Description |
 |------|-------------|
-| `fl_connect` | Connect/reconnect to FL Studio |
-| `fl_connection_status` | Get connection status and available MIDI ports |
+| `fl_connect` / `fl_connection_status` | Connect to FL Studio; list the MIDI ports the server sees |
+| `fl_get_project_overview` | Tempo, PPQ, time signature, patterns, channels, mixer tracks, loop mode: a good first call |
+| `fl_get_tempo` / `fl_set_tempo` | Read or set the tempo (decimals allowed) |
+| `fl_get_patterns` | Patterns in use and the active one |
+| `fl_select_pattern` | Make a pattern active (an unused number creates it) |
+| `fl_rename_pattern` | Rename a pattern |
+| `fl_find_empty_pattern` | First unused pattern |
+| `fl_clone_pattern` | Copy a pattern's notes and steps, e.g. for a variation |
+| `fl_add_marker` / `fl_get_markers` | Named time markers on the playlist |
+| `fl_get_roles` / `fl_check_roles` | Channels addressable by role; check that the parts a piece needs exist |
 
-### Project
+</details>
 
-| Tool | Description |
-|------|-------------|
-| `fl_get_project_overview` | Tempo, PPQ, time signature, patterns, channels, mixer track count, loop mode |
-| `fl_get_tempo` | Get tempo in BPM |
-| `fl_set_tempo` | Set tempo (10-522 BPM, decimals allowed) |
-
-### Patterns
-
-| Tool | Description |
-|------|-------------|
-| `fl_get_patterns` | List used patterns and the current one |
-| `fl_select_pattern` | Select a pattern (an unused number creates it) |
-| `fl_rename_pattern` | Rename a pattern (current one by default) |
-| `fl_find_empty_pattern` | Lowest unused pattern number |
-
-### Roles
+<details>
+<summary><b>Notes: piano roll and step sequencer</b> (16)</summary>
 
 | Tool | Description |
 |------|-------------|
-| `fl_get_roles` | Channels addressable by role, with mixer track and plugin |
-| `fl_check_roles` | Which of a list of roles the project has (found / missing / ambiguous) |
+| `fl_send_notes` | Add or replace notes, in any channel (index or role) and pattern |
+| `fl_send_chord` | Add a chord |
+| `fl_delete_notes` / `fl_clear_piano_roll` | Delete specific notes, or all of them |
+| `fl_get_piano_roll_state` | Read the notes, fresh from FL |
+| `fl_quantize_notes` | Snap a channel's notes to a grid |
+| `fl_trigger_script` / `fl_clear_request_queue` / `fl_get_piano_roll_info` | Run, cancel or inspect queued piano roll requests |
+| `fl_get_grid_bit` / `fl_set_grid_bit` | Read or set one step |
+| `fl_get_step_sequence` / `fl_set_step_sequence` | Read or set a channel's steps |
+| `fl_set_step_params` / `fl_get_step_params` | Steps with per-step pitch, velocity, release, fine pitch, pan, mod X/Y and shift |
+| `fl_trigger_note` | Play a note live (not stored unless FL records) |
 
-### Transport
+Notes can carry `velocity`, `release`, `pan`, `fcut`, `fres` (0-1), `slide`, `porta`, `muted`, `color` and `fine_pitch` (cents).
 
-| Tool | Description |
-|------|-------------|
-| `fl_play` | Start/pause playback |
-| `fl_stop` | Stop playback |
-| `fl_record` | Toggle recording |
-| `fl_get_transport_status` | Get playback/recording state |
-| `fl_set_song_position` | Set playback position |
-| `fl_get_song_length` | Get song duration |
-| `fl_set_loop_mode` | Switch between pattern/song mode |
-| `fl_set_playback_speed` | Adjust playback speed (0.25x-4x) |
+</details>
 
-### Mixer
-
-| Tool | Description |
-|------|-------------|
-| `fl_get_mixer_track_count` | Get number of mixer tracks |
-| `fl_get_mixer_track_info` | Get track details |
-| `fl_get_all_mixer_tracks` | List all tracks |
-| `fl_set_track_volume` | Set track volume |
-| `fl_set_track_volume_db` | Set a mixer track's level in dB |
-| `fl_set_track_pan` | Set track pan |
-| `fl_mute_track` | Mute/unmute track |
-| `fl_solo_track` | Solo/unsolo track |
-| `fl_arm_track` | Arm track for recording |
-| `fl_set_track_name` | Rename track |
-| `fl_set_track_color` | Set track color |
-| `fl_set_stereo_separation` | Adjust stereo width |
-
-### Channels
+<details>
+<summary><b>Channels and sounds</b> (25)</summary>
 
 | Tool | Description |
 |------|-------------|
-| `fl_get_channel_count` | Get number of channels |
-| `fl_get_channel_info` | Get channel details |
-| `fl_get_all_channels` | List all channels |
-| `fl_get_selected_channel` | Get selected channel |
-| `fl_select_channel` | Select/deselect channel |
-| `fl_select_one_channel` | Select channel exclusively |
-| `fl_list_generators` | Instrument plugins `fl_add_channel` can load (from FL's plugin database) |
-| `fl_add_channel` | Add a channel with an instrument plugin, optionally named (Windows) |
-| `fl_show_channel_editor` | Show/hide a channel's plugin window |
-| `fl_trigger_note` | Trigger MIDI note (real-time) |
-| `fl_set_channel_volume` | Set channel volume |
-| `fl_set_channel_pan` | Set channel pan |
-| `fl_mute_channel` | Mute/unmute channel |
-| `fl_solo_channel` | Solo/unsolo channel |
-| `fl_set_channel_name` | Rename channel |
-| `fl_set_channel_color` | Set channel color |
-| `fl_route_channel_to_mixer` | Route to mixer track |
-| `fl_get_grid_bit` | Get step sequencer step |
-| `fl_set_grid_bit` | Set step sequencer step |
-| `fl_get_step_sequence` | Get full pattern |
-| `fl_set_step_sequence` | Set full pattern |
-| `fl_set_step_params` | Turn steps on/off and set pitch, velocity, release, fine pitch, pan, mod X/Y, shift (optionally in a given pattern) |
-| `fl_get_step_params` | Read steps back with their parameters (optionally from a given pattern) |
+| `fl_get_channel_count` / `fl_get_channel_info` / `fl_get_all_channels` / `fl_get_selected_channel` | Read the channel rack |
+| `fl_select_channel` / `fl_select_one_channel` | Select channels |
+| `fl_set_channel_volume` / `fl_set_channel_pan` / `fl_set_channel_name` / `fl_set_channel_color` | Channel properties |
+| `fl_mute_channel` / `fl_solo_channel` | Mute or solo |
+| `fl_route_channel_to_mixer` | Send a channel to a mixer track |
+| `fl_show_channel_editor` | Show or hide a channel's plugin window |
+| `fl_browser_search` | Find samples and presets by name across the browser's folders, in under a second |
+| `fl_browser_list` | List a browser folder (`"Packs/Drums/Kicks"`, `"Plugin database/Generators"`, ...) **(W)** |
+| `fl_browser_refresh` | Make FL read its browser folders from disk again **(W)** |
+| `fl_load_in_new_channel` | A new channel from a sample, preset or plugin **(W)** |
+| `fl_load_in_channel` | Replace a channel's sound, keeping its name **(W)** |
+| `fl_list_generators` / `fl_add_channel` | Instrument plugins FL has, and a new channel with one **(W)** |
+| `fl_delete_channels` | Delete channels with their notes **(W)** |
+| `fl_set_cut_itself` | Make new notes cut ones still sounding **(W)** |
+| `fl_close_message` / `fl_undo` | Close an FL message box; step back in FL's undo history |
 
-### Plugins
+</details>
+
+<details>
+<summary><b>Plugins and effects</b> (16)</summary>
 
 | Tool | Description |
 |------|-------------|
-| `fl_is_plugin_valid` | Check if plugin exists |
-| `fl_get_plugin_name` | Get plugin name |
-| `fl_get_plugin_param_count` | Get parameter count |
-| `fl_get_plugin_params` | List all parameters |
-| `fl_get_plugin_param_value` | Get parameter value |
-| `fl_set_plugin_param_value` | Set parameter value |
-| `fl_get_preset_count` | Get preset count |
-| `fl_list_presets` | Names of a plugin's own presets |
-| `fl_next_preset` | Next preset |
-| `fl_prev_preset` | Previous preset |
-| `fl_get_plugin_color` | Get plugin color |
+| `fl_is_plugin_valid` / `fl_get_plugin_name` / `fl_get_plugin_color` | Plugin info |
+| `fl_get_plugin_param_count` / `fl_get_plugin_params` | Parameters with current values (searchable by name) |
+| `fl_get_plugin_param_value` / `fl_set_plugin_param_value` | Raw 0-1 values |
+| `fl_set_plugin_param_by_value` | Set what the knob should show: `"-6 dB"`, `"2.5 kHz"`, `"1:4"`, `"Peaking"` |
+| `fl_get_preset_count` / `fl_list_presets` / `fl_next_preset` / `fl_prev_preset` | A plugin's own presets |
+| `fl_add_effect` / `fl_delete_effect` | Add or remove a mixer effect **(W)** |
+| `fl_get_track_effects` / `fl_set_effect` | A track's effects; switch one on or off or set its mix |
 
-A channel's plugin can be addressed by role (`"lead"`) as well as by channel index; mixer effects are addressed by track number and slot.
+Plugins are addressed by channel (index or role), or by mixer track and slot.
 
-### Browser and loading (Windows)
+</details>
 
-| Tool | Description |
-|------|-------------|
-| `fl_browser_search` | Find samples and presets by name in the folders FL's browser takes from disk ("kick 909", "sytrus pad"); returns paths the loading tools take |
-| `fl_browser_list` | List a folder of FL's browser (`"Packs/Drums/Kicks"`, `"Plugin database/Effects"`, ...) |
-| `fl_load_in_new_channel` | New channel from a sample, an instrument preset or a plugin, optionally named |
-| `fl_load_in_channel` | Replace a channel's sample or preset, keeping its name |
-| `fl_add_effect` | Add an effect plugin to a mixer track |
-| `fl_get_track_effects` | Effects on a mixer track, by slot, with on/off and mix |
-| `fl_set_effect` | Switch an effect on or off, or set how much of it is mixed in |
-| `fl_close_message` | Close a message box FL is showing (FL ignores changes while one is open) |
-| `fl_undo` | Step back in FL's undo history |
-
-### Piano Roll
+<details>
+<summary><b>Mixer and mixing</b> (30)</summary>
 
 | Tool | Description |
 |------|-------------|
-| `fl_send_notes` | Add notes to the piano roll |
-| `fl_send_chord` | Add a chord (multiple notes at same time) |
-| `fl_delete_notes` | Delete specific notes |
-| `fl_clear_piano_roll` | Clear all notes |
-| `fl_get_piano_roll_state` | Read the piano roll's notes, fresh from FL |
+| `fl_get_mixer_track_count` / `fl_get_mixer_track_info` / `fl_get_all_mixer_tracks` | Tracks in use, with level and the channels routed to them |
+| `fl_set_track_volume` / `fl_set_track_volume_db` / `fl_set_track_pan` / `fl_set_stereo_separation` | Levels (also in dB), pan and width |
+| `fl_mute_track` / `fl_solo_track` / `fl_arm_track` | Mute, solo or arm one track |
+| `fl_set_track_name` / `fl_set_track_color` | Name and colour |
+| `fl_route_track` | Send a track to a bus, or add a send with a level |
+| `fl_mute_tracks` / `fl_solo_tracks` / `fl_clear_mute_solo` | Groups by name (`"drums"`) or number; solo keeps buses and sources playing |
+| `fl_set_colors` | Colour tracks and channels by name or hex |
+| `fl_list_intents` / `fl_apply_intent` | Named moves: `remove_mud`, `add_air`, `glue`, `large_hall`, `dotted_echo`, ... scaled by `amount` |
+| `fl_setup_chain` | Build a chain on a track: `vocal`, `lead`, `pad`, `bass`, `drum_bus`, `master` **(W)** |
+| `fl_diagnose_mix` | Render the mix and every part and list what to check: clipping, headroom, buried parts, masking, low end, routing **(W)** |
+| `fl_gain_stage` | Level every track so each part peaks at the same level **(W)** |
+| `fl_get_track_level` | The meters' highest peak while FL plays |
+| `fl_watch_peaks_start` / `fl_watch_peaks_status` / `fl_watch_peaks_stop` | Watch the meters in the background through a whole playthrough |
+| `fl_take_snapshot` / `fl_restore_snapshot` / `fl_list_snapshots` | Keep the whole mix (levels, routing, effects and their parameters, channels) and restore only what changed |
+| `fl_find_unused` | What the project no longer uses; changes nothing |
 
-These five take optional `channel` (an index or a role) and `pattern`. Notes can carry `velocity`, `release`, `pan`, `fcut`, `fres` (all 0.0-1.0), `slide`, `porta`, `muted`, `color` and `fine_pitch` (cents, ±1200; read back as `pitchofs` in tens of cents).
-| `fl_trigger_script` | Manually trigger the FL Studio script for queued requests |
-| `fl_get_piano_roll_info` | Get piano roll system info |
-| `fl_clear_request_queue` | Cancel pending queued changes |
+</details>
 
-### Arrangement, Render and Analysis
-
-| Tool | Description |
-|------|-------------|
-| `fl_arrange` | Build the song in the playlist: sections back to back, each pattern on its own playlist track, repeated to fill its sections. FL ends in song mode (Windows) |
-| `fl_get_playlist` | Song length and the names of the first playlist tracks |
-| `fl_arrange_in_pattern` | The older way: the song written as notes into one long pattern (works without the playlist) |
-| `fl_screenshot` | A picture of FL's window or one panel (playlist, piano roll, channel rack, mixer, browser), taken in the background (Windows) |
-| `fl_render` | Render what FL would play (pattern or song mode) to a WAV through FL's export dialog, and measure it (Windows) |
-| `fl_render_stems` | Render each channel soloed and summarise it (loudness, peak, clipping, energy per band, pitch), to balance the mix; `master_effects=false` takes the master's limiter out of the measurement (Windows) |
-| `fl_measure_pitch` | Play one note on a channel alone and report the pitch that comes out, and how to transpose its notes so it is in tune with the song (Windows) |
-| `audio_analyze` | Measure any WAV: loudness (LUFS, ITU-R BS.1770), peak, RMS, crest factor, clipping, silence, energy per frequency band, stereo correlation and width, estimated key, the note played most (pitch), loudness over time |
-
-`audio_analyze` needs numpy (`uv sync` installs it with the dev tools; otherwise `uv sync --extra analysis`). The key estimate often can't tell a key from its relative (E minor / G major), so it reports a runner-up.
-
-### Styles
+<details>
+<summary><b>Arrangement, automation and project files</b> (10)</summary>
 
 | Tool | Description |
 |------|-------------|
-| `style_list` | Available style packs (and any that failed to load, with the reason) |
-| `style_get` | A full style pack |
-| `style_check_project` | Does the open project fit a style: tempo in range, required roles found |
+| `fl_arrange` | Build the song in the playlist from sections: one playlist track per pattern, mutes kept with their pattern **(W)** |
+| `fl_add_clip` / `fl_delete_clip` | One clip, with the others left alone **(W)** |
+| `fl_get_playlist` | Song length and track names |
+| `fl_arrange_in_pattern` | The older way: the song written into one long pattern |
+| `fl_create_automation` | An automation clip with your points for a volume, pan or any plugin parameter **(W)** |
+| `fl_read_project` | Automation and clips from the project's last save or autosave |
+| `fl_save_project` | File > Save, confirmed by the file on disk **(W)** |
+| `fl_export_midi` | A pattern, or the song given as sections, as a `.mid` file |
+| `fl_screenshot` | A PNG of FL or one panel, taken in the background **(W)** |
 
-### Music (no FL Studio needed)
+</details>
+
+<details>
+<summary><b>Transport</b> (8)</summary>
+
+`fl_play`, `fl_stop`, `fl_record`, `fl_get_transport_status`, `fl_set_song_position`, `fl_get_song_length`, `fl_set_loop_mode` (pattern or song), `fl_set_playback_speed`.
+
+</details>
+
+<details>
+<summary><b>Render and audio analysis</b> (8)</summary>
 
 | Tool | Description |
 |------|-------------|
-| `music_reference` | List scales, chord qualities, transform operations and grid syntax |
-| `music_scale` | Pitches of a scale |
-| `music_chords` | Chord progression from symbols and/or roman numerals |
-| `music_degrees` | Melody from scale degrees |
-| `music_rhythm` | Notes from a step-grid or Euclidean pattern |
-| `music_roll` | Roll that speeds up, with a velocity ramp |
-| `music_transform` | Apply a list of transform operations to notes |
+| `fl_render` | Render to WAV or MP3 through FL's export dialog, and measure a WAV **(W)** |
+| `fl_render_stems` | Render every channel on its own and summarise each one, optionally with the master's limiter taken out **(W)** |
+| `fl_measure_pitch` | Play one note on a channel and report its real pitch, plus how to transpose the notes into tune **(W)** |
+| `audio_analyze` | Any audio file: LUFS, peak, RMS, crest factor, clipping, spectrum bands, stereo width, key, tempo, loudness over time |
+| `audio_compare` | Your mix next to a reference track |
+| `audio_extract_melody` | A recorded single-voice melody turned into notes |
+| `vocal_render` / `vocal_list_singers` | Sing notes with lyrics through OpenUtau's engine, as a WAV the browser can load |
 
-## Example Prompts
+</details>
+
+<details>
+<summary><b>Music toolkit and styles</b> (11, no FL needed)</summary>
+
+| Tool | Description |
+|------|-------------|
+| `music_reference` | The vocabulary: scales, chord qualities, transforms, grid syntax |
+| `music_scale` / `music_chords` / `music_degrees` | Scales; progressions from `Fm7`, `C/E` or `i-VI-III-VII`; melodies as scale degrees |
+| `music_rhythm` / `music_roll` | Step grids (`X...x...`), Euclidean rhythms (`E(3,8)`), rolls that speed up |
+| `music_transform` | Arpeggiate, transpose, shift, stretch, reverse, quantize, swing, humanize, snap to scale, legato, repeat, velocity ramp |
+| `music_export_midi` | Notes as a `.mid` file |
+| `style_list` / `style_get` / `style_check_project` | Style packs, and whether the project fits one |
+
+</details>
+
+## How it works
 
 ```text
-"Set the volume of mixer track 1 to 80% and pan it slightly left"
-"Put kicks on steps 0, 4, 8 and 12 of channel 0"
-"Add a C major arpeggio starting at beat 0: C4, E4, G4, C5, each a quarter note"
-"Add Am at beat 0, F at beat 4, C at beat 8 and G at beat 12, each 4 beats long"
-"List the parameters of the plugin on channel 0 and set the filter cutoff to 50%"
-"Write an F minor i-VI-III-VII progression, arpeggiate it in 16ths up and down over two octaves, and put it in the piano roll"
-"Add a snare roll over the last 2 bars that goes 8ths, 16ths, 32nds and gets louder"
-"Set the tempo to 150, find an empty pattern, call it 'Intro' and put a bassline on channel 3 there"
-"Check the project has a kick, a bass and a lead, then write a 4-bar bassline on the bass"
-"Using the hardstyle style pack, check my project and write a 16-bar climax: kick on every beat tuned to F, and a lead melody on the lead channel"
-"Write a 16-step hi-hat pattern on channel 2 with accents on the off-beats and the 4th step panned left"
+┌──────────────┐ stdio ┌────────────────────────────────────────────────────────┐
+│  MCP client  │──────▶│ FastMCP server (src/fl_studio_mcp)                     │
+└──────────────┘       │  tools/ ─ music/ ─ audio/ ─ project/ (pure Python)     │
+                       └───┬───────────────────┬───────────────────┬────────────┘
+             JSON command + │      JSON queue + │     posted window │  WAV / FLP
+              MIDI trigger  │       menu click  │   messages (Win)  │  files
+                           ▼                   ▼                   ▼
+                       ┌────────────────────────────────────────────────────────┐
+                       │ FL Studio                                              │
+                       │  FL Studio MCP Controller   ComposeWithLLM   browser,  │
+                       │  (MIDI script, FL API)      (piano roll)     menus     │
+                       └────────────────────────────────────────────────────────┘
 ```
+
+1. **Controller commands** (transport, mixer, channels, plugins, patterns). The server writes `{"id", "action", "params"}` to a JSON file and sends a MIDI note over the virtual port. The controller script inside FL calls FL's API and writes a response that echoes the id. Stale or half-written responses are ignored, and only one command is in flight at a time.
+2. **Piano roll.** Requests are queued in a JSON file. On Windows the server runs the `ComposeWithLLM` script from the piano roll's own menu while FL stays in the background; on macOS it sends a keystroke. The script validates the whole batch, applies it, and confirms which requests it processed.
+3. **What the API can't do** (Windows). Loading, clips, automation, effect deletion, render and save are done by posting clicks and keys to FL's own windows and menus. Every step waits for the expected menu, dialog or result before the next one, and many are checked against a fresh read or a picture of the panel.
+4. **Analysis** runs in the server, on files: rendered WAVs (numpy), saved `.flp` projects, and `.fst` presets.
+
+## Limitations
+
+- **macOS** only has the API-level tools: loading, playlist, automation, render and screenshots need Windows. On macOS, start from a template project that has your instruments.
+- **FL's menus and dialogs flash** while a background tool runs. Your keyboard, mouse and focus are never taken, but don't click inside FL while a tool is driving it.
+- **Clips can't be read** from the running project. `fl_read_project` reads the last save or autosave instead, and `fl_screenshot` shows the playlist.
+- **Sounds inside a plugin's own preset browser** (third-party synths) can't be loaded by name. Put them in a template project.
+- **The time signature is read-only**, and time markers can't be deleted through the API.
+- **Mixer sidechain inputs can't be set.** Use a bus-based pump instead.
+- **In the FL trial**, saved projects can't be reopened and their values are scrambled. Everything else works, plugins outside the edition included (they run as demos).
 
 ## Troubleshooting
 
-### "Not connected to FL Studio" / "No virtual MIDI port found"
+<details>
+<summary><b>"Not connected to FL Studio" / "No virtual MIDI port found"</b></summary>
 
-1. Make sure loopMIDI is running (Windows) or the IAC Driver is enabled (macOS)
-2. Run `fl_connection_status` to see which MIDI ports the server can see
-3. The server only auto-selects ports named like `loopMIDI`, `IAC` or `FL`. If yours is named differently, set `FL_MCP_MIDI_PORT`
-4. Check that the **FL Studio MCP Controller** is set on that port under **Input** in FL's MIDI Settings, and restart FL Studio after enabling it
+1. Make sure loopMIDI is running (Windows) or the IAC Driver is online (macOS).
+2. Run `fl_connection_status` to see the ports the server can see. If yours isn't named like `loopMIDI`, `IAC` or `FL`, set `FL_MCP_MIDI_PORT`.
+3. In FL's MIDI Settings, check that **FL Studio MCP Controller** is set on that port under **Input**, then restart FL Studio.
 
-### "Timeout waiting for FL Studio response"
+</details>
 
-1. Check that FL Studio is running and the controller is enabled on the same port the server uses
-2. Open FL's script output window (**View > Script output**) and look for errors from the FLStudioMCP controller
-3. Make sure the installed controller script is up to date: copy `fl_controller/device_FLStudioMCP.py` again after updating this repo. An old copy doesn't echo request ids, so every command times out
+<details>
+<summary><b>"Timeout waiting for FL Studio response"</b></summary>
 
-### Piano roll: "FL Studio did not respond"
+1. FL Studio must be running, with the controller enabled on the port the server uses.
+2. Look for errors from FLStudioMCP under **View > Script output**.
+3. Copy `fl_controller/device_FLStudioMCP.py` again after updating: an old copy doesn't echo request ids, so every command times out.
+4. If an FL message box is open, FL ignores changes; the server refuses to send them and says so. Close it, or use `fl_close_message`.
 
-1. A piano roll must be open in FL Studio
-2. The script must have been run once per FL session from the piano roll window's menu (**Tools > Scripting > ComposeWithLLM**, not FL's main Tools menu). On Windows the server tries this itself; if a dialog or another open menu was in the way, close it and retry, or run it by hand
-3. Press `Ctrl+Alt+Y` (Windows) or `Cmd+Opt+Y` (macOS) yourself to check the hotkey runs the script; the requests stay queued until then
-4. Make sure the installed `ComposeWithLLM.pyscript` is up to date (same reason as above)
-5. On Windows, FL Studio must not be minimized to the system tray; on macOS, grant Accessibility permissions when prompted
-6. After updating the server code, **fully restart** your MCP client. Reconnecting the MCP server alone may keep the old process running
+</details>
 
-## Architecture
+<details>
+<summary><b>Piano roll: "FL Studio did not respond"</b></summary>
 
-```text
-┌─────────────────┐     ┌─────────────────────────────────────────┐
-│   MCP Client    │────▶│           FastMCP Server                │
-│  (Claude, etc)  │     │                                         │
-└─────────────────┘     │  ┌─────────────────┐  ┌──────────────┐  │
-                        │  │ MIDI + JSON     │  │ Piano Roll   │  │
-                        │  │ Tools           │  │ Tools (JSON) │  │
-                        │  └────────┬────────┘  └──────┬───────┘  │
-                        └───────────┼──────────────────┼──────────┘
-                                    │                  │
-                               MIDI + JSON        JSON Files +
-                                    │              Keystroke
-                                    ▼                  ▼
-                        ┌─────────────────────────────────────────┐
-                        │              FL Studio                  │
-                        │  ┌──────────────┐  ┌──────────────────┐ │
-                        │  │FLStudioMCP   │  │ Piano Roll Script│ │
-                        │  │(MIDI Ctrl)   │  │ (ComposeWithLLM) │ │
-                        │  └──────────────┘  └──────────────────┘ │
-                        └─────────────────────────────────────────┘
-```
+1. A piano roll must be open in FL Studio.
+2. On macOS, run **Tools > Scripting > ComposeWithLLM** once per FL session from the *piano roll window's* menu (the ▸ arrow at its top left), not from FL's main Tools menu. On Windows the server does this itself; if a dialog was in the way, close it and retry.
+3. Copy `ComposeWithLLM.pyscript` again after updating.
+4. After updating the server, fully restart your MCP client: reconnecting may keep the old process running.
 
-### How It Works
-
-1. **Transport/Mixer/Channels/Plugins**:
-   - The server writes the command, tagged with a unique id, to a JSON file
-   - It sends a MIDI trigger note to FL Studio
-   - FL's controller script reads the JSON, calls the FL API and writes a response echoing the id
-   - The server reads the response with the matching id and ignores stale ones
-
-2. **Piano Roll**:
-   - The server queues note requests (each with an id) in a JSON file
-   - It sends a keystroke (Ctrl+Alt+Y on Windows, Cmd+Opt+Y on macOS) to run FL's piano roll script. On Windows, the FL Studio window is brought to the front first
-   - The piano roll script applies the requests and writes a response listing the ids it processed, which the server waits for
-
-The server writes its JSON files atomically (temp file + rename, retried if the file is briefly locked). The FL-side scripts write in place, because `os.replace` is broken in FL Studio 2026's embedded Python (it breaks the interpreter for every later call). The server is safe against that: it ignores responses it can't parse yet and only accepts one carrying its own request id.
+</details>
 
 ## Development
 
-### Setup
-
 ```bash
-uv sync --python 3.12   # installs runtime and dev dependencies
+uv sync --python 3.12                    # runtime + dev dependencies
+uv run pytest                            # tests; FL Studio not needed (its API is faked)
+uv run pytest --cov --cov-report=term-missing
+uv run ruff check .                      # lint
+uv run python -c "from fl_studio_mcp.utils.connection import call; print(call('dev.reloadScript'))"
+                                         # reload the controller after copying a new one in
 ```
 
-### Commands
+The FL-side scripts run in FL's embedded Python and can't import the server package. The tests load them against fake FL modules (`tests/fakes.py`), and `tests/fake_browser.py` and `tests/fake_playlist.py` model the browser and the playlist. A contract test runs every controller tool against the real `dispatch_command`, and no test can reach a running FL. Changes that touch FL's UI still need a check in FL Studio.
 
-| Command | Description |
-|---------|-------------|
-| `uv run fl-studio-mcp` | Run the MCP server |
-| `uv run ruff check .` | Lint the codebase |
-| `uv run ruff check --fix .` | Lint and auto-fix |
-| `uv run pytest` | Run tests (FL Studio not required; the FL API is faked) |
-| `uv run pytest --cov --cov-report=term-missing` | Run tests with coverage |
-| `uv run python -c "from fl_studio_mcp.utils.connection import call; print(call('dev.reloadScript'))"` | Make the running FL controller re-run its installed file after you copy a new version in |
+**To add a controller command,** add a tool in `src/fl_studio_mcp/tools/<area>.py` that sends `"<area>.<verb>"`. Then add a matching `handle_<area>_<verb>` and a branch in `dispatch_command` in `fl_controller/device_FLStudioMCP.py`. `tests/test_tool_contract.py` catches any mismatch.
 
-The FL-side scripts run inside FL Studio's embedded Python and can't import the server package. The tests load them against fake FL modules (`tests/fakes.py`). Changes to them still need a manual check in FL Studio.
+**Keep genre names out of the Python code:** genre knowledge belongs in style packs. A test enforces this.
 
-### Project Structure
+<details>
+<summary>Project structure</summary>
 
-```
+```text
 fl-studio-mcp/
-├── fl_controller/
-│   └── device_FLStudioMCP.py     # MIDI controller script (runs inside FL Studio)
+├── fl_controller/device_FLStudioMCP.py   # MIDI controller script (runs inside FL)
 ├── scripts/
-│   ├── ComposeWithLLM.pyscript   # Piano Roll script (runs inside FL Studio)
-│   ├── install_mcp_for_claude.ps1 # Claude config installer (Windows)
-│   ├── install_mcp_for_claude.sh # Claude config installer (macOS)
-│   └── setup.sh                  # FL Studio script installer (macOS)
+│   ├── ComposeWithLLM.pyscript           # piano roll script (runs inside FL)
+│   └── install_mcp_for_claude.*          # registers the server with Claude
 ├── src/fl_studio_mcp/
-│   ├── server.py                 # FastMCP server entry point
-│   ├── music/                    # Genre-agnostic toolkit: model, theory, rhythm, transform
-│   ├── tools/                    # MCP tools: channels, mixer, music, piano_roll, plugins, transport
-│   └── utils/
-│       ├── connection.py         # FL Studio connection wrapper
-│       ├── fl_trigger.py         # Piano roll keystroke trigger
-│       ├── midi_connection.py    # MIDI + JSON protocol, port selection
-│       └── paths.py              # FL Settings folder lookup, atomic JSON writes
-├── tests/                        # pytest suite with faked FL API
-├── install.ps1                   # One-command installer (Windows)
-└── install.sh                    # One-command installer (macOS)
+│   ├── server.py                         # FastMCP entry point
+│   ├── tools/                            # the MCP tools, one module per area
+│   ├── music/                            # theory, rhythm, transforms, arrangement, MIDI files
+│   ├── audio/                            # WAV/ffmpeg decoding, loudness, pitch, tempo, melody,
+│   │                                     #   mix diagnosis, reference compare, singing
+│   ├── mixing/intents.json               # named mixing moves and chains
+│   ├── project/                          # .flp / .fst parsing and preset building
+│   ├── styles/*.json                     # style packs
+│   └── utils/                            # connection, browser, playlist, mixer, render,
+│                                         #   window messages, capture, paths
+├── tests/                                # pytest suite with FL faked
+├── install.ps1 / install.sh              # one-command installers
+└── pyproject.toml
 ```
+
+</details>
 
 ## Credits
 
-- [karl-andres/fl-studio-mcp](https://github.com/karl-andres/fl-studio-mcp): the upstream project this fork is based on (see it for a demo video)
-- [calvinw/fl-studio-mcp](https://github.com/calvinw/fl-studio-mcp): Piano Roll integration approach
-- [FL Studio API Stubs](https://github.com/IL-Group/FL-Studio-API-Stubs): API documentation
-- [FastMCP](https://github.com/jlowin/fastmcp): MCP server framework
-- [mido](https://github.com/mido/mido): MIDI library for Python
-- [Image-Line](https://www.image-line.com/): FL Studio
+- [karl-andres/fl-studio-mcp](https://github.com/karl-andres/fl-studio-mcp): the upstream project this fork is based on
+- [calvinw/fl-studio-mcp](https://github.com/calvinw/fl-studio-mcp): the piano roll integration approach
+- [rosasynthesiz/flstudio-mcp](https://github.com/rosasynthesiz/flstudio-mcp): ideas for mix diagnosis, snapshots and MIDI export
+- [FL Studio API Stubs](https://github.com/IL-Group/FL-Studio-API-Stubs), [FastMCP](https://github.com/jlowin/fastmcp), [mido](https://github.com/mido/mido), [OpenUtau](https://github.com/stakira/OpenUtau)
+- [Image-Line](https://www.image-line.com/), for FL Studio
+
+Not affiliated with Image-Line.
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The original copyright notice is retained.
+MIT, see [LICENSE](LICENSE). The original copyright notice is kept.

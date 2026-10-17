@@ -23,6 +23,9 @@ SNAPS = ("Main", "Line", "Cell", "(none)", "1/6 step", "1/4 step", "1/3 step", "
          "Markers")
 
 
+MARKER_ROW = 18  # px above the clip area: the ruler's row of marker labels
+
+
 class FakePlaylist:
     """The playlist, its menu and the controller commands about it, in one model."""
 
@@ -59,12 +62,17 @@ class FakePlaylist:
         self.deaf_deletes = 0  # how often Delete's letter goes unheard
         self.sent: list[str] = []
         self.clicks_on_clips = 0
+        self.maximized = False
+        self.markers: list[tuple[str, int]] = []  # (name, bar), in time order
+        self._marker = -1  # the marker the last jump went to
 
     # --- what the song is ---------------------------------------------------
 
     @property
     def length_bars(self) -> int:
-        return max((bar - 1 + self.pattern_bars[p] for _, bar, p in self.clips), default=0)
+        clips = max((bar - 1 + self.pattern_bars[p] for _, bar, p in self.clips), default=0)
+        # A time marker makes the song reach it (seen live).
+        return max([clips, *(bar - 1 for _, bar in self.markers)])
 
     def _clip_at(self, track: int, bar: float) -> bool:
         return any(
@@ -127,6 +135,13 @@ class FakePlaylist:
             self.mode = params["mode"]
         elif action == "transport.setPosition":
             self.position = params["position"]
+        elif action == "arrangement.getMarkers":
+            return {"markers": [{"index": i, "name": n} for i, (n, _) in enumerate(self.markers)]}
+        elif action == "arrangement.jumpToNextMarker":
+            if self.mode == "song" and self.markers:  # by number, round and round
+                self._marker = (self._marker + 1) % len(self.markers)
+                last_tick = max(self.length_bars * BAR_TICKS - 1, 0)
+                self.position = min((self.markers[self._marker][1] - 1) * BAR_TICKS, last_tick)
         return {}
 
     # --- the window ---------------------------------------------------------
@@ -147,7 +162,10 @@ class FakePlaylist:
         assert panel is not None and hwnd == panel.hwnd
         bar = self.view_bar + round((x - panel.grid_left) / BAR_PIXELS)
         track = (y - panel.grid_top) // self.row_height + 1
-        if x >= panel.grid_left and y < panel.grid_top:  # the time ruler
+        on_label = y >= panel.grid_top - MARKER_ROW and any(b == bar for _, b in self.markers)
+        if x >= panel.grid_left and y < panel.grid_top and on_label:
+            pass  # a time marker's label (seen live: the song position stays)
+        elif x >= panel.grid_left and y < panel.grid_top:  # the time ruler
             last_tick = max(self.length_bars * BAR_TICKS - 1, 0)
             self.position = min((bar - 1) * BAR_TICKS, last_tick)
         elif x < panel.grid_left and y >= panel.grid_top:  # a track header
@@ -161,6 +179,35 @@ class FakePlaylist:
             else:
                 self.clips.add((track, bar, self.pattern))
         self._scroll_a_little()
+        return True
+
+    def _cell(self, x: int, y: int) -> tuple[int, int]:
+        panel = self.panel
+        assert panel is not None
+        return ((y - panel.grid_top) // self.row_height + 1,
+                self.view_bar + round((x - panel.grid_left) / BAR_PIXELS))
+
+    def _clip_covering(self, track: int, bar: int) -> tuple[int, int, int] | None:
+        return next((c for c in self.clips
+                     if c[0] == track and c[1] <= bar < c[1] + self.pattern_bars[c[2]]), None)
+
+    def right_click(self, hwnd: int, x: int, y: int) -> bool:
+        """With the draw tool, a right-click on a clip deletes it."""
+        assert self.panel is not None and hwnd == self.panel.hwnd and self.tool == "draw"
+        clip = self._clip_covering(*self._cell(x, y))
+        if clip:
+            self.clips.discard(clip)
+        return True
+
+    def empty_share(self, panel: PlaylistPanel, x: int, y: int) -> float:
+        """What the picture of a cell shows: no background under a clip."""
+        return 0.0 if self._clip_covering(*self._cell(x, y)) else 0.8
+
+    def maximize(self, hwnd: int) -> bool:
+        assert self.panel is not None and hwnd == self.panel.hwnd
+        self.panel = PlaylistPanel(hwnd=hwnd, header_left=100, grid_left=200, grid_top=50,
+                                   grid_bottom=650)
+        self.maximized = True
         return True
 
     def press_key(self, hwnd: int, key: int) -> bool:

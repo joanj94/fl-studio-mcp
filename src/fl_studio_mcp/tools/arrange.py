@@ -8,9 +8,11 @@ arrangement is written as notes into one long pattern.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fl_studio_mcp.music.arrange import Section, clip_bars, layout_sections, tile_notes
+from fl_studio_mcp.music.midi_file import write_midi
 from fl_studio_mcp.tools.piano_roll import read_notes, write_notes
 from fl_studio_mcp.utils import fl_playlist
 from fl_studio_mcp.utils.connection import call
@@ -22,6 +24,7 @@ if TYPE_CHECKING:
     from fastmcp import FastMCP
 
 MAX_PLAYLIST_TRACKS = 500
+SNAP_WARNING = "The playlist's snap could not be set back to Main (it is on Bar); set it by hand."
 # How far down the playlist left-over track names are looked for after a replace.
 NAMED_TRACKS_CHECKED = 60
 
@@ -50,7 +53,17 @@ def place_in_playlist(
     """
     panel = fl_playlist.open_panel()
     before = fl_playlist.state()
+    floor = 0.0  # how long the time markers alone make the song
+    if before["length_bars"]:
+        fl_playlist._fl("transport.setLoopMode", {"mode": "song"})  # markers are found in it
+        floor = fl_playlist.marker_extent()
     if before["length_bars"] and not replace:
+        if before["length_bars"] <= floor + fl_playlist.LENGTH_TOLERANCE_BARS:
+            raise PlaylistError(
+                f"The time markers make the song {floor:g} bars long, so it can't be told "
+                "whether the playlist holds clips. Pass replace=true to delete any clips "
+                "in it and lay the song out anew (the markers stay)."
+            )
         raise PlaylistError(
             f"The playlist already holds a song of {before['length_bars']:g} bars. Pass "
             "replace=true to delete every clip in it and lay the song out anew."
@@ -60,17 +73,20 @@ def place_in_playlist(
     listed = fl_playlist._fl("playlist.getTracks", {"count": NAMED_TRACKS_CHECKED})["tracks"]
     muted_names = {e["name"] for e in listed if e["is_muted"] and e["name"] in pattern_names}
     fl_playlist._fl("transport.setLoopMode", {"mode": "song"})
-    fl_playlist.clear()
+    fl_playlist.clear(floor)
     fl_playlist.zoom_for_placing()
     ends = {pattern: max(starts) - 1 + lengths_bars[pattern] for pattern, starts in bars.items()}
     last = max(ends, key=lambda pattern: ends[pattern])
+    # A song that ends inside the markers' length gets no longer: every clip is aimed.
+    ends_song = ends[last] > floor + fl_playlist.LENGTH_TOLERANCE_BARS
+    snap_left = False
     fl_playlist.snap_to_bars(True)
     try:
         for pattern in [last, *[p for p in bars if p != last]]:
             fl_playlist._fl("patterns.select", {"index": pattern})
             y = fl_playlist.find_track(panel, tracks[pattern])
             starts = list(bars[pattern])
-            if pattern == last:
+            if pattern == last and ends_song:
                 starts.remove(max(starts))
                 fl_playlist.place_last_clip(panel, y, max(bars[pattern]), ends[pattern])
             fl_playlist.place_clips(panel, y, starts, before["bar_ticks"])
@@ -79,6 +95,7 @@ def place_in_playlist(
             fl_playlist.snap_to_bars(False)
         except PlaylistError:
             fl_playlist.close_menus_left_open()
+            snap_left = True
         try:  # aiming moved the song position along the ruler
             call("transport.setPosition", {"position": 0, "mode": 2})
         except RuntimeError:
@@ -95,7 +112,8 @@ def place_in_playlist(
         if entry["track"] not in tracks.values() and entry["name"] in pattern_names:
             fl_playlist._fl("playlist.setTrackName", {"track": entry["track"], "name": ""})
     fl_playlist._fl("playlist.scrollTo", {"bar": 1, "track": min(tracks.values())})
-    return fl_playlist.state()
+    state = fl_playlist.state()
+    return {**state, "warning": SNAP_WARNING} if snap_left else state
 
 
 def _arranged_notes(
@@ -199,7 +217,97 @@ def register_arrange_tools(mcp: FastMCP) -> None:
             ],
             "mode": "song",
         }
+        if "warning" in state:
+            result["warning"] = state["warning"]
         return result
+
+    def _edit_clips(edit) -> dict:
+        """Run `edit(panel)` with the playlist ready for single clips.
+
+        Returns {"song_length_bars", "warning"?} or {"error"}.
+        """
+        snap_left = False
+        try:
+            with keyboard_lock:
+                panel = fl_playlist.open_panel()
+                fl_playlist._fl("transport.setLoopMode", {"mode": "song"})
+                fl_playlist.zoom_for_placing()
+                fl_playlist.snap_to_bars(True)
+                try:
+                    edit(panel)
+                finally:
+                    try:
+                        fl_playlist.snap_to_bars(False)
+                    except PlaylistError:
+                        fl_playlist.close_menus_left_open()
+                        snap_left = True
+                    try:  # aiming moved the song position along the ruler
+                        call("transport.setPosition", {"position": 0, "mode": 2})
+                    except RuntimeError:
+                        pass
+            result = {"song_length_bars": fl_playlist.state()["length_bars"]}
+        except PlaylistError as e:
+            fl_playlist.close_menus_left_open()
+            return {"error": str(e)}
+        except Exception as e:  # e.g. Windows refusing a call: a tool answers, it doesn't raise
+            fl_playlist.close_menus_left_open()
+            return {"error": f"The playlist could not be driven: {e!r}"}
+        return {**result, "warning": SNAP_WARNING} if snap_left else result
+
+    @mcp.tool()
+    def fl_add_clip(pattern: int, track: int, bar: int) -> dict:
+        """Put one clip of a pattern in the playlist, without touching the other clips.
+
+        For changing a song fl_arrange laid out: add a fill, a crash, one more
+        bar of a part. The cell must be empty. Checked by a picture of the
+        playlist (or, past the song's end, by the song's new length). Windows only.
+
+        Args:
+            pattern: Pattern index (1-based).
+            track: Playlist track (1-based).
+            bar: The bar the clip starts on (1 = the song's start).
+
+        Returns {"pattern", "track", "bar", "song_length_bars"} or {"error"}.
+        """
+        info = call("project.getInfo")
+        if "error" in info:
+            return info
+        lengths = {p["index"]: p["length_beats"] for p in info.get("patterns", [])}
+        if not lengths.get(pattern):
+            return {"error": f"Pattern {pattern} is empty or doesn't exist"}
+        for name, value in (("track", track), ("bar", bar)):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                return {"error": f"{name} must be 1 or more, got {value!r}"}
+        length_bars = lengths[pattern] / (info.get("beats_per_bar") or 4)
+
+        def edit(panel) -> None:
+            fl_playlist._fl("patterns.select", {"index": pattern})
+            fl_playlist.add_clip(panel, track, bar, length_bars)
+
+        outcome = _edit_clips(edit)
+        if "error" in outcome:
+            return outcome
+        return {"pattern": pattern, "track": track, "bar": bar, **outcome}
+
+    @mcp.tool()
+    def fl_delete_clip(track: int, bar: int) -> dict:
+        """Delete the one playlist clip that covers a bar on a track. Windows only.
+
+        Checked by a picture of the playlist. The bar must lie inside the song.
+
+        Args:
+            track: Playlist track (1-based).
+            bar: A bar the clip covers (1 = the song's start).
+
+        Returns {"track", "bar", "song_length_bars"} or {"error"}.
+        """
+        for name, value in (("track", track), ("bar", bar)):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                return {"error": f"{name} must be 1 or more, got {value!r}"}
+        outcome = _edit_clips(lambda panel: fl_playlist.delete_clip(panel, track, bar))
+        if "error" in outcome:
+            return outcome
+        return {"track": track, "bar": bar, **outcome}
 
     @mcp.tool()
     def fl_get_playlist(tracks: int = 20) -> dict:
@@ -314,3 +422,68 @@ def register_arrange_tools(mcp: FastMCP) -> None:
             "sections": _describe(laid_out, beats_per_bar),
             "notes_written": notes_written,
         }
+
+    @mcp.tool()
+    def fl_export_midi(
+        path: str,
+        pattern: int | None = None,
+        sections: list[dict] | None = None,
+        channels: list[int | str] | None = None,
+    ) -> dict:
+        """Export notes from FL Studio as a standard MIDI file, one track per channel.
+
+        Either one pattern (default: the active one), or a whole song given as
+        sections like fl_arrange takes them (the playlist itself can't be read).
+        Step sequencer hits are exported as short notes. Reads every channel's
+        piano roll, so allow about half a second per channel and pattern.
+
+        Args:
+            path: Where to write it; must end in .mid.
+            pattern: The pattern to export (1-based).
+            sections: The song, e.g. [{"bars": 8, "patterns": [1]}, {"bars": 16,
+                "patterns": [1, 2, 3]}]; instead of `pattern`.
+            channels: Channels (index or role) to include; default: every channel
+                that isn't an automation clip. Channels without notes are left out.
+
+        Returns {"path", "tracks", "notes", "channels"} or {"error"}.
+        """
+        info = call("project.getInfo")
+        if "error" in info:
+            return info
+        beats_per_bar = info.get("beats_per_bar") or 4
+        lengths = {p["index"]: p["length_beats"] for p in info.get("patterns", [])}
+        rack = info.get("channels", [])
+        names = {c["index"]: c["name"] for c in rack}
+        current = info.get("current_pattern")
+        tracks: list[dict] = []
+        try:
+            wanted = ([c["index"] for c in rack if not c.get("is_automation")]
+                      if channels is None else [resolve_channel(c) for c in channels])
+            if sections is not None:
+                laid_out = layout_sections(sections, beats_per_bar)
+                sources = sorted({p for section in laid_out for p in section.patterns})
+            else:
+                sources = [current if pattern is None else pattern]
+            unused = [p for p in sources if not lengths.get(p)]
+            if unused:
+                raise ValueError(f"Pattern(s) {unused} are empty")
+            for channel in wanted:
+                by_pattern = {p: read_notes(channel, p) for p in sources}
+                notes = (_arranged_notes(laid_out, by_pattern, lengths) if sections is not None
+                         else by_pattern[sources[0]])
+                if notes:
+                    tracks.append({"name": names.get(channel, f"Channel {channel}"),
+                                   "notes": notes})
+            if not tracks:
+                raise ValueError("None of those channels has notes there")
+            result = write_midi(Path(path), tracks, info.get("bpm") or 120, beats_per_bar)
+        except (OSError, ValueError, TypeError, OverflowError, RuntimeError) as e:
+            return {"error": str(e)}
+        finally:
+            # Reading leaves another pattern active: put back the one that was.
+            if current:
+                try:
+                    call("patterns.select", {"index": current})
+                except RuntimeError:
+                    pass  # FL isn't answering: whatever failed above says so
+        return {**result, "channels": [t["name"] for t in tracks]}

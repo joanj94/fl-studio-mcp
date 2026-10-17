@@ -10,7 +10,7 @@ from fl_studio_mcp.tools import channel_setup, register_channel_setup_tools
 from fl_studio_mcp.utils import fl_channel_rack
 from tests.fakes import ToolCollector
 
-HOME, DOWN, ENTER = 0x24, 0x28, 0x0D
+HOME, END, DOWN, ENTER = 0x24, 0x23, 0x28, 0x0D
 
 
 class FakeRack:
@@ -26,6 +26,12 @@ class FakeRack:
         self.rack_showing = True
         self.asks = True  # False: "Remember my choice" was ticked, no box comes
         self.clone_enabled = False  # True: the walk ends one entry early, on Clone selected
+        self.extra_entries = 0  # enabled entries above Delete selected besides Clone
+        # Seen live: FL's API doesn't select automation channels (selectOne leaves none).
+        self.unselectable: set[str] = set()
+        # Seen live: the rack's group filter ("Unsorted") hides automation channels.
+        self.filter = "Unsorted"
+        self.filter_menu = False
         self.pointer_on_menu_for = 0
         self.undone = 0
         self.plugins = [None, "Sytrus", None, None]
@@ -45,14 +51,26 @@ class FakeRack:
         self.menus, self.button_menu = 1, False
         return True
 
+    def click_filter(self) -> bool:
+        if not self.rack_showing:
+            return False
+        self.events.append("filter")
+        self.menus, self.filter_menu, self.button_menu = 1, True, False
+        return True
+
+    def _rows(self) -> list[int]:
+        return [i for i, name in enumerate(self.names)
+                if self.filter == "All" or name not in self.unselectable]
+
     def channel_list_panel(self) -> tuple[int, int] | None:
         return (77, self.panel_height) if self.rack_showing else None
 
     def right_click(self, hwnd: int, x: int, y: int) -> bool:
         row = (y - 17) // 30 + self.scrolled  # seen live: rows of 30 px, the first from 17
         self.events.append(f"right click {row}")
-        if 0 <= row < len(self.names):
-            self.selected = {row}
+        rows = self._rows()
+        if 0 <= row < len(rows):
+            self.selected = {rows[row]}
             self.menus, self.button_menu, self.entry = 1, True, 0
         return True
 
@@ -80,8 +98,11 @@ class FakeRack:
         if self.menus != menus:
             return False
         self.events.append(key)
+        self.length_before_clone = len(self.names)
         if key == HOME:
             self.entry = 0
+        elif key == END:
+            self.entry = 2
         elif key == DOWN:
             self.entry += 1
         elif key == ENTER:
@@ -90,14 +111,22 @@ class FakeRack:
         return True
 
     def _choose(self) -> None:
+        if self.filter_menu:
+            self.filter_menu = False
+            self.filter = ["All", "Automation", "Unsorted"][self.entry]
+            return
         if self.button_menu:
             (channel,) = self.selected
             if self.entry == self._cut_itself_entry():
                 self.cut_itself[channel] = not self.cut_itself[channel]
             return
-        delete_entry = fl_channel_rack.DOWNS_TO_DELETE + int(self.clone_enabled)
-        if self.entry == delete_entry - 1 and self.clone_enabled:
-            self.names += [self.names[i] for i in sorted(self.selected)]
+        shift = int(self.clone_enabled) + self.extra_entries
+        delete_entry = fl_channel_rack.DOWNS_TO_DELETE + shift
+        if delete_entry - shift <= self.entry < delete_entry:
+            clones = [self.names[i] for i in sorted(self.selected)]
+            # Seen live: the clones end up selected, and undoing them leaves none selected.
+            self.selected = set(range(len(self.names), len(self.names) + len(clones)))
+            self.names += clones
         elif self.entry == delete_entry:
             if self.asks:
                 self.message = "Confirm"
@@ -144,12 +173,18 @@ class FakeRack:
                 for i, name in enumerate(self.names)
             ]}
         if action == "channels.selectOne":
-            self.selected = {params["index"]}
+            self.selected = set() if self._unselectable(params["index"]) else {params["index"]}
         elif action == "channels.select":
-            self.selected.add(params["index"])
+            if not self._unselectable(params["index"]):
+                self.selected.add(params["index"])
         elif action == "project.undo":
             self.undone += params["steps"]
+            self.names = self.names[:self.length_before_clone]
+            self.selected = set()
         return {}
+
+    def _unselectable(self, index: int) -> bool:
+        return self.names[index] in self.unselectable
 
 
 @pytest.fixture
@@ -172,6 +207,7 @@ def rack(monkeypatch) -> FakeRack:
     monkeypatch.setattr(windows, "close_messages", fake.close_messages)
     monkeypatch.setattr(windows, "channel_list_panel", fake.channel_list_panel)
     monkeypatch.setattr(windows, "right_click_in_window", fake.right_click)
+    monkeypatch.setattr(windows, "click_channel_rack_filter", fake.click_filter)
     monkeypatch.setattr(fl_channel_rack.fl_capture, "menu_pixels", fake.menu_pixels)
     return fake
 
@@ -241,12 +277,55 @@ def test_delete_gives_up_while_the_pointer_stays_on_the_menu(rack):
     assert ENTER not in rack.events
 
 
-def test_a_walk_that_cloned_instead_is_undone_and_reported(rack):
+def test_a_walk_that_cloned_is_undone_and_goes_one_entry_further(rack):
+    # Seen live: with a sample channel selected, "Clone selected" is enabled.
     rack.clone_enabled = True
+
+    assert fl_channel_rack.delete_channels([3]) == 3
+    assert rack.names == ["Kick", "Lead", "Spare A"]
+    assert rack.undone == 1
+    assert rack.events.count(DOWN) == 4 + 5
+
+
+def test_a_walk_that_misses_twice_is_undone_and_reported(rack):
+    rack.clone_enabled, rack.extra_entries = True, 1
 
     with pytest.raises(fl_channel_rack.ChannelRackError, match="not where it was expected"):
         fl_channel_rack.delete_channels([3])
-    assert rack.undone == 1
+    assert rack.undone == 2
+    assert rack.names == ["Kick", "Lead", "Spare A", "Spare B"]
+
+
+def test_channels_the_api_cant_select_are_selected_by_a_click(rack):
+    rack.names.append("Pad fade")
+    rack.unselectable = {"Pad fade"}
+
+    assert fl_channel_rack.delete_channels([1, 4]) == 3
+    assert rack.names == ["Kick", "Spare A", "Spare B"]
+    assert "right click 3" in rack.events  # row 4 moved up once channel 1 was gone
+
+
+def test_only_unselectable_channels_are_deleted_one_by_one(rack):
+    rack.names += ["Pad fade", "Lead fade"]
+    rack.unselectable = {"Pad fade", "Lead fade"}
+
+    assert fl_channel_rack.delete_channels([4, 5]) == 4
+    assert rack.names == ["Kick", "Lead", "Spare A", "Spare B"]
+
+
+def test_the_filter_shows_all_channels_for_the_clicks_and_is_put_back(rack):
+    rack.names.append("Pad fade")
+    rack.unselectable = {"Pad fade"}
+
+    fl_channel_rack.delete_channels([4])
+    assert rack.events[:3] == ["filter", HOME, ENTER]
+    assert rack.events[-3:] == ["filter", END, ENTER]
+    assert rack.filter == "Unsorted"
+
+
+def test_the_filter_is_left_alone_when_the_api_selects_everything(rack):
+    fl_channel_rack.delete_channels([3])
+    assert "filter" not in rack.events
 
 
 def test_another_boxes_question_is_closed_not_confirmed(rack, monkeypatch):
@@ -297,6 +376,27 @@ def test_the_button_is_found_in_a_scrolled_rack(rack):
 
     assert rack.events[:2] == ["right click 3", "right click 2"]
     assert rack.cut_itself == [False, True, True, False]
+
+
+def test_the_button_is_found_below_rows_the_filter_hides(rack):
+    # Seen live: channels after the automation clips (hidden by "Unsorted") got no menu,
+    # since their row lay below the last button.
+    rack.names = ["Kick", "Pad fade", "Lead fade", "Vocal"]
+    rack.unselectable = {"Pad fade", "Lead fade"}
+
+    assert fl_channel_rack.set_cut_itself(3, True) is True
+
+    assert rack.events[:3] == ["right click 3", "right click 2", "right click 1"]
+    assert rack.cut_itself == [False, True, False, True]
+
+
+def test_no_menu_at_any_row_is_reported(rack, monkeypatch):
+    # A dialog in the way: clicks land, no menu opens.
+    monkeypatch.setattr(fl_channel_rack.fl_windows, "right_click_in_window",
+                        lambda hwnd, x, y: True)
+
+    with pytest.raises(fl_channel_rack.ChannelRackError, match="menu did not open"):
+        fl_channel_rack.set_cut_itself(2, True)
 
 
 def test_a_channel_out_of_view_is_reported(rack):

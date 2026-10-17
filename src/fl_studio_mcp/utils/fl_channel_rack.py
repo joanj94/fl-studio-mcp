@@ -31,8 +31,9 @@ RETRY_DELAY = 0.4
 # Seen live (FL 2026 trial): from the menu's first entry, "Add one", the arrow
 # keys go to Loop starter, Purge unused audio clips, Select unused channels and
 # then Delete selected: "Clone selected" in between is disabled in the trial
-# and skipped. Where it is enabled the walk ends on it, which the check on the
-# rack's length catches (the clone is undone).
+# and skipped. Seen live: it is enabled when a sample channel is selected; the walk
+# then ends on it, which the check on the rack's length catches: the clone is
+# undone and the walk taken one entry further.
 DOWNS_TO_DELETE = 4
 OK_BUTTON = 0  # the confirmation's buttons are Ok and Cancel, left to right
 CONFIRM_TITLE = "Confirm"  # the title of the box "The selected channel is about to be deleted"
@@ -77,14 +78,14 @@ def _wait_until(done, timeout: float) -> bool:
         time.sleep(POLL_INTERVAL)
 
 
-def _walk_to_delete() -> bool | None:
+def _walk_to_delete(downs: int) -> bool | None:
     """One menu walk: True if Delete selected was chosen, None if the pointer got in the way."""
     if fl_windows.popup_menu_count() != 0 or not fl_windows.click_channel_rack_menu_arrow():
         return False
     try:
         if not _wait_until(lambda: fl_windows.popup_menu_count() == 1, MENU_TIMEOUT):
             return False
-        for key in [fl_windows.VK_HOME] + [fl_windows.VK_DOWN] * DOWNS_TO_DELETE:
+        for key in [fl_windows.VK_HOME] + [fl_windows.VK_DOWN] * downs:
             if not fl_windows.press_in_popup_menu(key, menus=1):
                 return False
         # The pointer moves a menu's highlight: no choice is made under it.
@@ -95,9 +96,9 @@ def _walk_to_delete() -> bool | None:
         fl_windows.close_popup_menus()  # no menu may be left open, whatever happened
 
 
-def _choose_delete() -> None:
+def _choose_delete(downs: int) -> None:
     for _ in range(ATTEMPTS):
-        outcome = _walk_to_delete()
+        outcome = _walk_to_delete(downs)
         if outcome:
             return
         if outcome is False:
@@ -123,52 +124,108 @@ def _check_ready() -> None:
         )
 
 
+def _names() -> list[str]:
+    return [c["name"] for c in _fl("channels.getAll")["channels"]]
+
+
+def _delete_selected(expected: list[str], select) -> None:
+    """Select the channels (`select()`), choose "Delete selected..." and confirm; the
+    rack must then hold `expected`. A walk that cloned instead is undone and taken one
+    entry further (Clone selected is enabled for sample channels). Seen live: the
+    clones end up selected and the undo leaves nothing selected, so the channels are
+    selected again before every walk."""
+    before = _count()
+    for downs in (DOWNS_TO_DELETE, DOWNS_TO_DELETE + 1):
+        select()
+        # Seen live: with the playlist and piano roll over it, the rack's menu arrow can't open.
+        _fl("ui.focusWindow", {"window": "channel rack"})
+        _choose_delete(downs)
+        # The box doesn't come when its "Remember my choice" was ticked before.
+        if _wait_until(lambda: fl_windows.open_message() is not None, CONFIRM_TIMEOUT):
+            title = fl_windows.open_message()
+            # Ok is only pressed in the box this entry brings: another entry's question is
+            # cancelled.
+            if title != CONFIRM_TITLE or not fl_windows.click_message_button(OK_BUTTON):
+                fl_windows.close_messages()
+                raise ChannelRackError(
+                    f"FL Studio showed {title!r} instead of its delete confirmation; it was "
+                    "closed and nothing was deleted"
+                )
+        wanted = len(expected)
+        # Seen live: FL takes the channels out one at a time, so a rack that is only
+        # shorter isn't done yet. A longer one is a clone, which comes all at once.
+        _wait_until(lambda: fl_windows.open_message() is None and (
+            (count := _count()) == wanted or count > before), DELETE_TIMEOUT)
+        if fl_windows.open_message() is not None:  # never leave FL blocked by a box
+            fl_windows.close_messages()
+        if _count() <= before:
+            break
+        _fl("project.undo", {"steps": 1})  # the walk ended on another entry (Clone selected)
+    after = _names()
+    if after != expected:
+        raise ChannelRackError(
+            f"The rack has {len(after)} channels where {len(expected)} were expected after "
+            f"deleting {before - len(expected)} of {before}: the menu entry was not where it "
+            "was expected"
+        )
+
+
+def _set_filter(key: int) -> None:
+    """Choose an entry of the rack's group filter: Home is "All", End "Unsorted"."""
+    if fl_windows.popup_menu_count() != 0 or not fl_windows.click_channel_rack_filter():
+        raise ChannelRackError("The channel rack's group filter could not be opened")
+    try:
+        if not (_wait_until(lambda: fl_windows.popup_menu_count() == 1, MENU_TIMEOUT)
+                and fl_windows.press_in_popup_menu(key, menus=1)
+                and fl_windows.press_in_popup_menu(fl_windows.VK_RETURN, menus=1)):
+            raise ChannelRackError("The channel rack's group filter did not open as expected")
+    finally:
+        fl_windows.close_popup_menus()
+
+
 def delete_channels(indexes: list[int]) -> int:
     """Delete the channels at `indexes`; returns how many channels the rack has left.
 
-    Selects exactly those channels, chooses "Delete selected..." and confirms.
-    Raises ChannelRackError unless the rack ends up that many channels shorter.
+    Selects those channels, chooses "Delete selected..." and confirms. Channels FL's
+    API doesn't select (automation clips, seen live) are selected by a right-click
+    on their button instead and deleted one at a time; the rack's group filter is set
+    to "All" for that (its "Unsorted" hides them) and put back. Raises
+    ChannelRackError unless exactly those channels are gone.
     """
     _check_ready()
-    before = _count()
-    _fl("channels.selectOne", {"index": indexes[0]})
-    for index in indexes[1:]:
-        _fl("channels.select", {"index": index, "select": True})
-    selected = [c["index"] for c in _fl("channels.getAll")["channels"] if c["is_selected"]]
-    if sorted(selected) != sorted(indexes):
+    names = _names()
+    _select(indexes)
+    selected = _selected()
+    if not set(selected) <= set(indexes):
         raise ChannelRackError(
             f"FL Studio selected channels {selected} instead of {sorted(indexes)}; none deleted"
         )
+    if selected:
+        names = [n for i, n in enumerate(names) if i not in selected]
+        _delete_selected(names, lambda: _select(selected))
+    by_click = sorted(set(indexes) - set(selected), reverse=True)
+    if by_click:
+        _set_filter(fl_windows.VK_HOME)
+        try:
+            names = _delete_by_click(by_click, selected, names)
+        finally:
+            _set_filter(fl_windows.VK_END)
+    return len(names)
 
-    # Seen live: with the playlist and piano roll over it, the rack's menu arrow can't open.
-    _fl("ui.focusWindow", {"window": "channel rack"})
-    _choose_delete()
-    # The box doesn't come when its "Remember my choice" was ticked before.
-    if _wait_until(lambda: fl_windows.open_message() is not None, CONFIRM_TIMEOUT):
-        title = fl_windows.open_message()
-        # Ok is only pressed in the box this entry brings: another entry's question is cancelled.
-        if title != CONFIRM_TITLE or not fl_windows.click_message_button(OK_BUTTON):
-            fl_windows.close_messages()
-            raise ChannelRackError(
-                f"FL Studio showed {title!r} instead of its delete confirmation; it was closed "
-                "and nothing was deleted"
-            )
-    wanted = before - len(indexes)
-    # Seen live: FL takes the channels out one at a time, so a rack that is only
-    # shorter isn't done yet. A longer one is a clone, which comes all at once.
-    _wait_until(lambda: fl_windows.open_message() is None and (
-        (count := _count()) == wanted or count > before), DELETE_TIMEOUT)
-    after = _count()
-    if fl_windows.open_message() is not None:  # never leave FL blocked by a box
-        fl_windows.close_messages()
-    if after > before:  # the walk ended on another entry (Clone selected)
-        _fl("project.undo", {"steps": 1})
-    if after != wanted:
-        raise ChannelRackError(
-            f"The rack has {after} channels where {wanted} were expected after deleting "
-            f"{len(indexes)} of {before}: the menu entry was not where it was expected"
-        )
-    return after
+
+def _delete_by_click(by_click: list[int], selected: list[int], names: list[str]) -> list[str]:
+    # Highest first, so a deletion doesn't move the rows still to come.
+    for index in by_click:
+        row = index - sum(1 for s in selected if s < index)
+        count = len(names)
+
+        def select_by_click(row: int = row, count: int = count) -> None:
+            _open_button_menu(row, count)  # leaves exactly that channel selected
+            _close_menu()
+
+        names = names[:row] + names[row + 1:]
+        _delete_selected(names, select_by_click)
+    return names
 
 
 # --- "Cut itself", in the menu of a channel's button ---------------------------------
@@ -193,7 +250,10 @@ def _open_button_menu(index: int, count: int) -> None:
     """Right-click channel `index`'s button: leaves its menu open.
 
     The right-click selects the channel it lands on, which is how the row is
-    checked (another channel is selected first) and, after a miss, found.
+    checked (another channel is selected first) and, after a miss, found. A
+    click that opens no menu went below the last button (seen live: the rack's
+    group filter hides automation channels, so later channels sit higher than
+    their index), so the next row up is tried.
     """
     panel = fl_windows.channel_list_panel()
     if panel is None:
@@ -202,16 +262,21 @@ def _open_button_menu(index: int, count: int) -> None:
     if count > 1:
         _fl("channels.selectOne", {"index": index - 1 if index else 1})
     y = min(FIRST_BUTTON_Y + ROW_HEIGHT * index, height - ROW_HEIGHT // 2)
-    for _ in range(BUTTON_ATTEMPTS):
-        if (
-            fl_windows.popup_menu_count() != 0
-            or not fl_windows.right_click_in_window(hwnd, BUTTON_X, y)
-            or not _wait_until(lambda: fl_windows.popup_menu_count() == 1, MENU_TIMEOUT)
+    no_menu = ChannelRackError(
+        "The channel's menu did not open (is another menu or a dialog open in FL Studio?)"
+    )
+    for _ in range(BUTTON_ATTEMPTS + index):
+        if fl_windows.popup_menu_count() != 0 or not fl_windows.right_click_in_window(
+            hwnd, BUTTON_X, y
         ):
             _close_menu()
-            raise ChannelRackError(
-                "The channel's menu did not open (is another menu or a dialog open in FL Studio?)"
-            )
+            raise no_menu
+        if not _wait_until(lambda: fl_windows.popup_menu_count() == 1, MENU_TIMEOUT):
+            if y - ROW_HEIGHT < FIRST_BUTTON_Y:
+                _close_menu()
+                raise no_menu
+            y -= ROW_HEIGHT
+            continue
         selected = _selected()
         if selected == [index]:
             return

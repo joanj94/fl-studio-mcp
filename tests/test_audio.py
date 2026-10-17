@@ -599,10 +599,17 @@ class Rack:
     def __init__(self) -> None:
         self.names = ["Kick", "Pad", "Lead"]
         self.muted = {1}
-        self.soloed: int | None = None
         self.sent: list[tuple[str, dict]] = []
         self.fail: str | None = None
         self.master_effects = {0: False, 3: True, 9: True}  # slot: switched on
+        self.automation: set[int] = set()
+
+    @property
+    def soloed(self) -> int | None:
+        """The one sounding channel, if only one sounds (automation makes no sound)."""
+        sounding = [i for i in range(len(self.names))
+                    if i not in self.muted and i not in self.automation]
+        return sounding[0] if len(sounding) == 1 else None
 
     def send_command(self, action: str, params: dict | None = None, timeout: float = 2.0):
         params = params or {}
@@ -618,16 +625,21 @@ class Rack:
             self.master_effects[params["slot"]] = params["enabled"]
         if action == "channels.getAll":
             result = {"channels": [
-                {"index": i, "name": name, "is_muted": i in self.muted}
+                {"index": i, "name": name, "is_muted": i in self.muted,
+                 "is_automation": i in self.automation}
                 for i, name in enumerate(self.names)
             ]}
         elif action == "transport.getStatus":
             result = {"loop_mode": "song"}
         elif action == "channels.solo":
-            self.soloed = params["index"] if params["solo"] else None
-            self.muted = set()  # FL: taking a solo off unmutes everything
+            # FL: a solo is every other channel muted; taking it off unmutes everything,
+            # unless the mutes no longer look like a solo (seen live).
+            raise AssertionError("stems mute channels themselves: FL's solo isn't used")
         elif action == "channels.mute":
-            self.muted.add(params["index"])
+            if params["muted"]:
+                self.muted.add(params["index"])
+            else:
+                self.muted.discard(params["index"])
         return {"success": True, "id": "x", **result}
 
 
@@ -673,6 +685,57 @@ def test_stems_leave_mutes_and_solos_as_they_were(tools, rack, monkeypatch):
 
     assert "warning" not in tools["fl_render_stems"]()
     assert rack.soloed is None and rack.muted == {1}
+
+
+def test_automation_keeps_playing_in_every_stem(tools, rack, monkeypatch):
+    # Seen live: a solo muted the automation channels too, so a faded track rendered
+    # at its last fade's level (a lead stem read 19 dB too quiet).
+    rack.names.append("Lead fade")
+    rack.automation = {3}
+    during: list[tuple[int | None, set[int]]] = []
+
+    def render(path: Path, timeout: float) -> float:
+        during.append((rack.soloed, set(rack.muted)))
+        write_wav(path, stereo(sine(440, 1.0, -6)), RATE, 1, 16)
+        return 0.5
+
+    monkeypatch.setattr(audio_tools, "render_audio", render)
+
+    result = tools["fl_render_stems"]()
+
+    assert [stem["name"] for stem in result["stems"]] == ["Kick", "Lead"]  # not the clip
+    assert during == [(0, {1, 2}), (2, {0, 1})]  # the automation channel unmuted
+    assert "warning" not in result and rack.soloed is None and rack.muted == {1}
+
+
+def test_every_mute_is_put_back_as_it_was(tools, rack, monkeypatch):
+    # Seen live: with the automation unmuted a solo no longer read as one, and taking
+    # it off left every other channel muted.
+    rack.names += ["Lead fade", "Hat"]
+    rack.automation, rack.muted = {3}, {1, 4}
+    _each_stem_sounds(monkeypatch, rack, {0: -6, 2: -6})
+
+    tools["fl_render_stems"]()
+
+    assert rack.muted == {1, 4}
+
+
+def test_a_muted_automation_channel_stays_muted(tools, rack, monkeypatch):
+    rack.names.append("Old fade")
+    rack.automation, rack.muted = {3}, {1, 3}
+    during: list[set[int]] = []
+
+    def render(path: Path, timeout: float) -> float:
+        during.append(set(rack.muted))
+        write_wav(path, stereo(sine(440, 1.0, -6)), RATE, 1, 16)
+        return 0.5
+
+    monkeypatch.setattr(audio_tools, "render_audio", render)
+
+    tools["fl_render_stems"]()
+
+    assert all(3 in muted for muted in during)
+    assert rack.muted == {1, 3}
 
 
 def test_stems_can_be_rendered_without_the_masters_effects(tools, rack, monkeypatch):
@@ -740,7 +803,7 @@ def test_a_mono_stem_has_no_stereo_correlation(tools, rack, monkeypatch):
     assert stem["silent"] is False and stem["stereo_correlation"] is None
 
 
-def test_a_failed_stem_render_takes_the_solo_off_again(tools, rack, monkeypatch):
+def test_a_failed_stem_render_puts_the_mutes_back(tools, rack, monkeypatch):
     def fails(path: Path, timeout: float) -> float:
         raise fl_render.RenderError("a dialog is open")
 
@@ -792,7 +855,7 @@ def test_analyze_tool_reports_problems(tools, tmp_path, name, content, kwargs, m
 def test_analyze_tool_reports_running_out_of_memory(tools, tmp_path, monkeypatch):
     path = write_wav(tmp_path / "a.wav", stereo(sine(440, 0.1)), RATE, 1, 16)
 
-    def too_big(samples, rate, window):
+    def too_big(samples, rate, window, tempo=True):
         raise MemoryError
 
     monkeypatch.setattr(analysis, "analyze", too_big)

@@ -269,6 +269,17 @@ def test_get_all_channels_includes_plugin_name(controller, fl_modules):
     fl_modules["plugins"].getPluginName.assert_called_once_with(1, -1, False, True)
 
 
+def test_get_all_channels_marks_automation_clips(controller, fl_modules):
+    fl_modules["channels"].channelCount.return_value = 2
+    fl_modules["midi"].CT_AutoClip = 5
+    fl_modules["channels"].getChannelType.side_effect = [0, 5]
+
+    result = controller.dispatch_command("channels.getAll", {})
+
+    assert [c["is_automation"] for c in result["channels"]] == [False, True]
+    fl_modules["channels"].getChannelType.assert_called_with(1, True)
+
+
 def test_show_in_piano_roll_selects_then_reopens_the_window(controller, fl_modules):
     calls = []
     fl_modules["channels"].channelCount.return_value = 5

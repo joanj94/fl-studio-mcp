@@ -12,7 +12,7 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from fl_studio_mcp.utils import browser_index, fl_browser, fl_windows
+from fl_studio_mcp.utils import browser_index, fl_browser, fl_mixer, fl_windows
 from fl_studio_mcp.utils.connection import call
 from fl_studio_mcp.utils.fl_browser import BrowserError
 from fl_studio_mcp.utils.fl_trigger import keyboard_lock
@@ -341,6 +341,23 @@ def register_browser_tools(mcp: FastMCP) -> None:
                 "items": [item.to_dict() for item in items]}
 
     @mcp.tool()
+    def fl_browser_refresh() -> dict:
+        """Make FL Studio's browser read its folders from disk again.
+
+        FL caches the browser's folders: files written to disk while FL runs (a
+        new sample, a rendered WAV, a preset) don't show in it, and can't be
+        loaded, until it is refreshed. Windows only.
+
+        Returns {"refreshed": true} or {"error"}.
+        """
+        try:
+            with keyboard_lock:
+                fl_browser.reread_structure()
+        except BrowserError as e:
+            return {"error": str(e)}
+        return {"refreshed": True}
+
+    @mcp.tool()
     def fl_browser_search(query: str, folder: str = "", limit: int = 40) -> dict:
         """Find sounds by name in FL Studio's browser: samples and presets, in any folder.
 
@@ -421,6 +438,29 @@ def register_browser_tools(mcp: FastMCP) -> None:
         except ValueError as e:
             return {"error": str(e)}
         return run_load(send_to_channel, path, index, keep_name)
+
+    @mcp.tool()
+    def fl_delete_effect(track: int, slot: int) -> dict:
+        """Delete the effect in a mixer track's slot (fl_get_track_effects lists them).
+
+        Done through the slot's own menu in FL's mixer, then confirmed; the other
+        effects keep their slots. Undo with fl_undo. Windows only.
+
+        Args:
+            track: Mixer track (0 = master).
+            slot: Effect slot, 0-9.
+
+        Returns {"track", "slot", "deleted": plugin name} or {"error"}.
+        """
+        try:
+            with keyboard_lock:
+                name = fl_mixer.delete_effect(track, slot)
+        except fl_mixer.MixerError as e:
+            return {"error": str(e)}
+        except Exception as e:  # e.g. Windows refusing a call: a tool answers, it doesn't raise
+            fl_windows.close_popup_menus()
+            return {"error": f"The mixer could not be driven: {e!r}"}
+        return {"track": track, "slot": slot, "deleted": name}
 
     @mcp.tool()
     def fl_add_effect(path: str, track: int) -> dict:

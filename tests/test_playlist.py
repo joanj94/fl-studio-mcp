@@ -9,6 +9,7 @@ import pytest
 from fl_studio_mcp.music.arrange import clip_bars, layout_sections
 from fl_studio_mcp.tools import register_arrange_tools
 from fl_studio_mcp.utils import connection, fl_playlist, fl_windows
+from fl_studio_mcp.utils.fl_windows import PlaylistPanel
 from tests.fake_playlist import FakePlaylist
 from tests.fakes import ToolCollector
 
@@ -127,6 +128,10 @@ def fl(monkeypatch) -> FakePlaylist:
     monkeypatch.setattr(fl_windows, "restore_if_minimized", lambda: False)
     monkeypatch.setattr(fl_windows, "click_in_window", fake.click)
     monkeypatch.setattr(fl_windows, "press_key_in_window", fake.press_key)
+    monkeypatch.setattr(fl_windows, "maximize_window", fake.maximize)
+    monkeypatch.setattr(fl_windows, "right_click_in_window", fake.right_click)
+    monkeypatch.setattr(fl_playlist, "_empty_share", fake.empty_share)
+    monkeypatch.setattr(fl_playlist, "MENU_TIMEOUT", 0.0)
     monkeypatch.setattr(fl_windows, "click_playlist_menu_arrow", fake.click_menu_arrow)
     monkeypatch.setattr(fl_windows, "popup_menu_count", lambda: fake.menus)
     monkeypatch.setattr(fl_windows, "press_in_popup_menu", fake.press)
@@ -209,6 +214,42 @@ def test_a_playlist_with_a_song_in_it_is_only_replaced_when_asked(tools, fl):
 
     assert fl.clips == EXPECTED
     assert not fl.time_selection
+
+
+def test_a_small_playlist_is_maximized_first(tools, fl):
+    fl.panel = PlaylistPanel(hwnd=7, header_left=100, grid_left=200, grid_top=50, grid_bottom=200)
+
+    tools["fl_arrange"](SONG)
+
+    assert fl.maximized and fl.clips == EXPECTED
+
+
+def test_time_markers_after_the_song_end(tools, fl):
+    fl.markers = [("Intro", 1), ("Outro", 25)]  # the song is 20 bars: the markers make it 24
+
+    refused = tools["fl_arrange"](SONG)  # the length can't tell whether clips are there
+    result = tools["fl_arrange"](SONG, replace=True)
+
+    assert "time markers make the song 24 bars" in refused["error"]
+    assert fl.clips == EXPECTED
+    assert result["song_length_bars"] == 24
+
+
+def test_time_markers_inside_the_song(tools, fl):
+    fl.markers = [("Intro", 1), ("Drop", 5), ("Break", 13)]  # on bars clips are aimed at
+
+    tools["fl_arrange"](SONG, replace=True)
+
+    assert fl.clips == EXPECTED
+
+
+def test_clips_hidden_inside_the_markers_length_are_still_deleted(tools, fl):
+    fl.markers = [("End", 41)]
+    fl.clips = {(5, 1, 3)}
+
+    tools["fl_arrange"](SONG, replace=True)
+
+    assert fl.clips == EXPECTED
 
 
 def test_a_delete_that_goes_unheard_is_tried_again(tools, fl, monkeypatch):
@@ -353,3 +394,36 @@ def test_the_song_position_goes_back_to_the_start_after_a_failure_too(tools, fl)
 
     assert "error" in tools["fl_arrange"](SONG)
     assert fl.position == 0
+
+
+# --- single clips -------------------------------------------------------------
+
+
+def test_a_single_clip_is_deleted_and_added_back(tools, fl):
+    tools["fl_arrange"](SONG)
+
+    deleted = tools["fl_delete_clip"](track=1, bar=14)
+    added = tools["fl_add_clip"](pattern=1, track=1, bar=14)
+
+    assert deleted == {"track": 1, "bar": 14, "song_length_bars": 20.0}
+    assert added == {"pattern": 1, "track": 1, "bar": 14, "song_length_bars": 20.0}
+    assert fl.clips == EXPECTED
+    assert (fl.snap, fl.position, fl.menus) == ("Main", 0, 0)
+
+
+def test_a_clip_added_past_the_song_end_makes_it_longer(tools, fl):
+    tools["fl_arrange"](SONG)
+
+    result = tools["fl_add_clip"](pattern=2, track=3, bar=21)
+
+    assert result["song_length_bars"] == 24.0 and (3, 21, 2) in fl.clips
+
+
+def test_single_clip_mistakes_are_refused(tools, fl):
+    tools["fl_arrange"](SONG)
+
+    assert "no clip at bar 6" in tools["fl_delete_clip"](track=1, bar=6)["error"]
+    assert "already holds a clip" in tools["fl_add_clip"](pattern=1, track=1, bar=2)["error"]
+    assert "empty or doesn't exist" in tools["fl_add_clip"](pattern=9, track=1, bar=6)["error"]
+    assert "bar must be 1 or more" in tools["fl_delete_clip"](track=1, bar=0)["error"]
+    assert fl.clips == EXPECTED

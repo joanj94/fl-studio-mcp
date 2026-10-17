@@ -1,0 +1,133 @@
+{
+  "intents": {
+    "high_pass": {
+      "plugin": "Fruity Parametric EQ 2",
+      "description": "Cut everything below a frequency: from 30 Hz (amount 0) up to 250 Hz (amount 1). Frees room for the parts that own the low end.",
+      "bands": [1, 2],
+      "set": {"Band {band} type": "High pass", "Band {band} freq": {"from": "30Hz", "to": "250Hz"}}
+    },
+    "low_pass": {
+      "plugin": "Fruity Parametric EQ 2",
+      "description": "Cut everything above a frequency: from 20 kHz (amount 0) down to 3 kHz (amount 1). Darkens and pushes a part back.",
+      "bands": [7, 6],
+      "set": {"Band {band} type": "Low pass", "Band {band} freq": {"from": "20000Hz", "to": "3000Hz"}}
+    },
+    "remove_mud": {
+      "plugin": "Fruity Parametric EQ 2",
+      "description": "Cut the boomy low mids around 250 Hz, up to -8 dB.",
+      "bands": [3, 2, 4],
+      "set": {"Band {band} type": "Peaking", "Band {band} freq": "250Hz", "Band {band} width": "40%", "Band {band} level": {"from": "0dB", "to": "-8dB"}}
+    },
+    "remove_boxiness": {
+      "plugin": "Fruity Parametric EQ 2",
+      "description": "Cut the hollow, boxy range around 500 Hz, up to -6 dB.",
+      "bands": [4, 3, 5],
+      "set": {"Band {band} type": "Peaking", "Band {band} freq": "500Hz", "Band {band} width": "40%", "Band {band} level": {"from": "0dB", "to": "-6dB"}}
+    },
+    "remove_harshness": {
+      "plugin": "Fruity Parametric EQ 2",
+      "description": "Cut the piercing range around 3 kHz, up to -6 dB.",
+      "bands": [5, 6, 4],
+      "set": {"Band {band} type": "Peaking", "Band {band} freq": "3000Hz", "Band {band} width": "30%", "Band {band} level": {"from": "0dB", "to": "-6dB"}}
+    },
+    "add_body": {
+      "plugin": "Fruity Parametric EQ 2",
+      "description": "Boost around 150 Hz for weight, up to +5 dB.",
+      "bands": [2, 3],
+      "set": {"Band {band} type": "Peaking", "Band {band} freq": "150Hz", "Band {band} width": "50%", "Band {band} level": {"from": "0dB", "to": "5dB"}}
+    },
+    "add_presence": {
+      "plugin": "Fruity Parametric EQ 2",
+      "description": "Boost around 5 kHz so a part cuts through, up to +5 dB.",
+      "bands": [6, 5],
+      "set": {"Band {band} type": "Peaking", "Band {band} freq": "5000Hz", "Band {band} width": "50%", "Band {band} level": {"from": "0dB", "to": "5dB"}}
+    },
+    "add_air": {
+      "plugin": "Fruity Parametric EQ 2",
+      "description": "Lift the top above 12 kHz with a high shelf, up to +6 dB.",
+      "bands": [7, 6],
+      "set": {"Band {band} type": "High shelf", "Band {band} freq": "12000Hz", "Band {band} level": {"from": "0dB", "to": "6dB"}}
+    },
+    "gentle_compression": {
+      "plugin": "Fruity Limiter",
+      "description": "Even out a part: 2:1, slow attack, threshold down to -18 dB.",
+      "set": {"Comp ratio": "2.0:1", "Comp attack time": "20ms", "Comp release time": "200ms", "Comp threshold": {"from": "0dB", "to": "-18dB"}}
+    },
+    "heavy_compression": {
+      "plugin": "Fruity Limiter",
+      "description": "Flatten a part's dynamics: 6:1, fast attack, threshold down to -30 dB.",
+      "set": {"Comp ratio": "6.0:1", "Comp attack time": "3ms", "Comp release time": "80ms", "Comp threshold": {"from": "0dB", "to": "-30dB"}}
+    },
+    "glue": {
+      "plugin": "Fruity Limiter",
+      "description": "Bind a bus together: 2:1, slow attack, threshold down to -12 dB.",
+      "set": {"Comp ratio": "2.0:1", "Comp attack time": "30ms", "Comp release time": "250ms", "Comp threshold": {"from": "0dB", "to": "-12dB"}}
+    },
+    "louder": {
+      "plugin": "Fruity Limiter",
+      "description": "Push a part or the master into the limiter: gain up to +9 dB, ceiling -0.3 dB.",
+      "set": {"Limiter ceiling": "-0.3dB", "Gain": {"from": "0dB", "to": "9dB"}}
+    },
+    "small_room": {
+      "plugin": "Fruity Reeverb 2",
+      "description": "A short, close room: 0.6 s decay, wet up to 35 %.",
+      "set": {"Room size": "20", "Decay time": "0.6sec", "Low cut": "200Hz", "Wet level": {"from": "0%", "to": "35%"}}
+    },
+    "large_hall": {
+      "plugin": "Fruity Reeverb 2",
+      "description": "A big space: decay from 2 s to 6 s, wet up to 45 %.",
+      "set": {"Room size": "90", "Low cut": "250Hz", "Decay time": {"from": "2sec", "to": "6sec"}, "Wet level": {"from": "10%", "to": "45%"}}
+    },
+    "darker_reverb": {
+      "plugin": "Fruity Reeverb 2",
+      "description": "Take the top off the reverb: high cut from 8 kHz down to 2 kHz.",
+      "set": {"High cut": {"from": "8000Hz", "to": "2000Hz"}}
+    },
+    "brighter_reverb": {
+      "plugin": "Fruity Reeverb 2",
+      "description": "Open the reverb's top: high cut from 6 kHz up to 16 kHz.",
+      "set": {"High cut": {"from": "6000Hz", "to": "16000Hz"}}
+    },
+    "eighth_echo": {
+      "plugin": "Fruity Delay 3",
+      "description": "Echoes on 8th notes, synced to the tempo; feedback and wet grow with amount.",
+      "set": {"Tempo sync": "On", "Time": "2:0", "Feedback level": {"from": "20%", "to": "60%"}, "Output wet": {"from": "15%", "to": "50%"}}
+    },
+    "dotted_echo": {
+      "plugin": "Fruity Delay 3",
+      "description": "Echoes on dotted 8ths, synced to the tempo; feedback and wet grow with amount.",
+      "set": {"Tempo sync": "On", "Time": "3:0", "Feedback level": {"from": "20%", "to": "60%"}, "Output wet": {"from": "15%", "to": "50%"}}
+    },
+    "quarter_echo": {
+      "plugin": "Fruity Delay 3",
+      "description": "Echoes on quarter notes, synced to the tempo; feedback and wet grow with amount.",
+      "set": {"Tempo sync": "On", "Time": "4:0", "Feedback level": {"from": "20%", "to": "60%"}, "Output wet": {"from": "15%", "to": "50%"}}
+    }
+  },
+  "chains": {
+    "vocal": {
+      "description": "Clean the lows, even out, a little room.",
+      "steps": [["high_pass", "remove_mud", "add_presence"], ["gentle_compression"], ["small_room"]]
+    },
+    "lead": {
+      "description": "Room for the low end, presence, echoes and space.",
+      "steps": [["high_pass", "add_presence"], ["eighth_echo"], ["large_hall"]]
+    },
+    "pad": {
+      "description": "Keep a wide part out of the lows and set it back.",
+      "steps": [["high_pass", "remove_mud"], ["large_hall", "darker_reverb"]]
+    },
+    "bass": {
+      "description": "Tighten the low mids and even out the level.",
+      "steps": [["remove_mud"], ["gentle_compression"]]
+    },
+    "drum_bus": {
+      "description": "Bind the drums on their bus.",
+      "steps": [["remove_boxiness"], ["glue"]]
+    },
+    "master": {
+      "description": "Gentle glue and a ceiling for the whole mix.",
+      "steps": [["glue"], ["louder"]]
+    }
+  }
+}

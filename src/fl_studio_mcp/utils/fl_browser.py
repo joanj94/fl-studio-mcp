@@ -101,11 +101,16 @@ def _walk(direction: str, until: BrowserItem | None = None) -> tuple[list[Browse
 
 
 def _peek(count: int) -> list[BrowserItem]:
-    """Step on `count` items (fewer at the end of the list) and return them."""
+    """Step on `count` items and return them, where more items are known to follow.
+
+    A repeat of the same item is "pending" (the cursor may have stopped at the end
+    of the list); with items still to come, it was a step onto a look-alike neighbour.
+    """
     if count == 0:
         return []
     params = {"direction": "next", "steps": count, "collapse": True}
-    return [_item(node) for node in _command("browser.navigate", params).get("items", [])]
+    result = _command("browser.navigate", params)
+    return [_item(node) for node in [*result.get("items", []), *result.get("pending", [])]]
 
 
 def _step(direction: str, steps: int) -> None:
@@ -162,7 +167,11 @@ def _read_open_folder(tail: list[BrowserItem]) -> tuple[list[BrowserItem], int]:
         ahead = _peek(len(expected))
         if ahead == expected:
             return reached[:-1], len(reached) + len(ahead)
-        reached.extend(ahead)  # that look-alike was one of the folder's own items
+        # That look-alike was one of the folder's own items. The items peeked at may
+        # hold the tail's real start (seen live: "Packs/Legacy" ends with a "Loops"
+        # folder, and "Packs/Loops" comes right after it), so the walk goes on from
+        # the look-alike, not from past them.
+        _step("previous", len(ahead))
     raise BrowserError(f"The browser has more than {MAX_ITEMS} items here; giving up.")
 
 

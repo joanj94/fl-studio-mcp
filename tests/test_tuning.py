@@ -25,7 +25,7 @@ class Project:
     def __init__(self) -> None:
         self.pattern = 2
         self.mode = "pattern"
-        self.soloed: int | None = None
+        self.muted: set[int] = set()
         self.rolls: dict[tuple[int, int], list[dict]] = {}
         self.fail: str | None = None
         self.sent: list[str] = []
@@ -49,9 +49,15 @@ class Project:
             result = {"index": 3}
         elif action == "patterns.select":
             self.pattern = params["index"]
-        elif action == "channels.solo":
-            self.soloed = params["index"] if params["solo"] else None
+        elif action == "channels.mute":
+            (self.muted.add if params["muted"] else self.muted.discard)(params["index"])
         return {"success": "error" not in result, "id": "x", **result}
+
+    @property
+    def soloed(self) -> int | None:
+        """The one channel heard, when every other one is muted."""
+        heard = [i for i in (0, 1) if i not in self.muted]
+        return heard[0] if len(heard) == 1 else None
 
 
 @pytest.fixture

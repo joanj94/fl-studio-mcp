@@ -59,7 +59,7 @@ def _test_render(channel: int, note: int, beats: float, timeout: float) -> tuple
             _fl("transport.setLoopMode", {"mode": "pattern"})
         rendered = render_stems([channel], timeout, keep_files=True)
         path = Path(rendered["stems"][0]["path"])
-        analysis = analyze_file(path, DEFAULT_WINDOW_SECONDS)
+        analysis = analyze_file(path, DEFAULT_WINDOW_SECONDS, tempo=False)
         problems = [rendered["warning"]] if "warning" in rendered else []
     finally:
         left = []

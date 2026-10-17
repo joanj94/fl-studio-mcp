@@ -61,6 +61,15 @@ def test_an_item_named_like_the_next_folder_does_not_end_the_listing(fake_fl):
     assert _names(fl_browser.list_folder("Packs/Drums/Loops")) == ["x.wav"]
 
 
+def test_a_look_alike_at_the_end_of_a_folder_does_not_hide_the_real_next_folder(fake_fl):
+    # Seen live with "Packs/Legacy": its last folder is "Loops", and so is the next one.
+    fake_fl.tree["Packs"]["Drums"] = {**fake_fl.tree["Packs"]["Drums"], "Loops": {"x.wav": None}}
+
+    assert _names(fl_browser.list_folder("Packs/Drums")) == ["/Hats", "/Kicks", "/Loops"]
+    assert fake_fl.focused_path() == ("Packs", "Drums")
+    assert _names(fl_browser.list_folder("Packs/Loops")) == ["/Kicks", "Snares.wav"]
+
+
 def test_a_folder_holding_a_folder_of_its_own_name_is_read_in_full(fake_fl):
     fake_fl.tree["Packs"]["Drums"]["Kicks"] = {"Kicks": {"deep.wav": None}, "a.wav": None}
 
@@ -503,3 +512,19 @@ def test_add_channel_reports_a_generator_the_browser_does_not_show(channel_tools
     del fake_fl.tree["Plugin database"]["Generators"]["Synth classic"]["Sytrus.fst"]
 
     assert "'Sytrus' is not in" in channel_tools["fl_add_channel"]("Sytrus")["error"]
+
+
+def test_browser_refresh_tool(monkeypatch):
+    collector = ToolCollector()
+    register_browser_tools(collector)
+    calls = []
+    monkeypatch.setattr(fl_browser, "reread_structure", lambda: calls.append(1))
+
+    assert collector.tools["fl_browser_refresh"]() == {"refreshed": True} and calls == [1]
+
+    def fails():
+        raise BrowserError("FL Studio's browser isn't showing.")
+
+    monkeypatch.setattr(fl_browser, "reread_structure", fails)
+    assert collector.tools["fl_browser_refresh"]() == {
+        "error": "FL Studio's browser isn't showing."}

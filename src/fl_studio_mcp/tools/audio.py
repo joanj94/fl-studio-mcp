@@ -1,7 +1,7 @@
 """Rendering the project to audio and measuring the result.
 
 `fl_render` drives FL Studio's export dialog (`utils/fl_render.py`);
-`fl_render_stems` does it once per channel, soloed, to show what each part
+`fl_render_stems` does it once per channel, heard on its own, to show what each part
 contributes; `audio_analyze` measures any WAV file and doesn't touch FL.
 """
 
@@ -48,18 +48,18 @@ def _new_render_path(prefix: str = "render") -> Path:
     return path
 
 
-def analyze_file(path: Path, window_seconds: float) -> dict:
-    """Measurements of a WAV file, or {"error": ...}."""
+def analyze_file(path: Path, window_seconds: float, tempo: bool = True) -> dict:
+    """Measurements of an audio file (WAV, or any format ffmpeg reads), or {"error": ...}."""
     try:
         from fl_studio_mcp.audio.analysis import analyze
-        from fl_studio_mcp.audio.wav import read_wav
+        from fl_studio_mcp.audio.decode import load_audio
     except ImportError:
         return {"error": MISSING_NUMPY}
     if not window_seconds > 0:
         return {"error": f"window_seconds must be more than 0, got {window_seconds}"}
     try:
-        samples, rate = read_wav(path)
-        return analyze(samples, rate, window_seconds)
+        samples, rate = load_audio(path)
+        return analyze(samples, rate, window_seconds, tempo)
     except (OSError, ValueError) as e:
         return {"error": f"Could not analyse {path}: {e}"}
     except MemoryError:
@@ -107,16 +107,19 @@ MASTER_TRACK = 0
 def render_stems(
     indexes: list[int] | None, timeout: float, keep_files: bool, master_effects: bool = True
 ) -> dict:
-    """Render each channel soloed and summarise it; raises RenderError.
+    """Render each channel on its own and summarise it; raises RenderError.
 
     With `master_effects` off, the master track's effects are switched off for
     the renders and on again afterwards: a limiter there would bring every
     stem up to the same ceiling and hide how loud each part really is.
 
-    Soloing a channel and taking the solo off again leaves every channel
-    unmuted, so the channels that were muted are muted again afterwards. A solo
-    that was on comes back that way too: seen live, FL reports a solo as every
-    other channel muted, and muting every other channel reads as a solo.
+    A channel is heard on its own by muting every other channel except the
+    automation channels that were playing: a muted automation clip stops moving
+    its parameter (seen live: a faded lead track rendered at its last fade's
+    level, 19 dB too quiet), and they aren't rendered as stems themselves. FL's
+    solo isn't used: it mutes the automation too, and with them unmuted again,
+    taking the solo off left every other channel muted (seen live). Every
+    channel gets back the mute state it had.
     """
     rack = _fl("channels.getAll").get("channels", [])
     missing = [i for i in indexes or [] if i >= len(rack)]
@@ -124,10 +127,11 @@ def render_stems(
         raise RenderError(
             f"There is no channel {missing[0]}: the rack has channels 0-{len(rack) - 1}"
         )
-    wanted = [c for c in rack if not c.get("is_muted")] if indexes is None else [
-        rack[i] for i in indexes
-    ]
-    muted = [c["index"] for c in rack if c.get("is_muted")]
+    wanted = [
+        c for c in rack if not c.get("is_muted") and not c.get("is_automation")
+    ] if indexes is None else [rack[i] for i in indexes]
+    was_muted = {c["index"]: bool(c.get("is_muted")) for c in rack}
+    playing_clips = {c["index"] for c in rack if c.get("is_automation") and not c.get("is_muted")}
     bypassed: list[int] = []
     if not master_effects:
         bypassed = [
@@ -136,30 +140,29 @@ def render_stems(
             if effect.get("enabled")
         ]
     stems: list[dict] = []
-    soloed: int | None = None
+    muted = dict(was_muted)  # the mute states as they are now
     try:
         for slot in bypassed:
             _fl("mixer.setEffect", {"track": MASTER_TRACK, "slot": slot, "enabled": False})
         for channel in wanted:
-            soloed = channel["index"]
-            _fl("channels.solo", {"index": soloed, "solo": True})
-            path = _new_render_path(f"stem-{soloed}")
+            for index in muted:
+                mute = index != channel["index"] and index not in playing_clips
+                if muted[index] != mute:
+                    _fl("channels.mute", {"index": index, "muted": mute})
+                    muted[index] = mute
+            path = _new_render_path(f"stem-{channel['index']}")
             render_audio(path, timeout)
-            summary = _stem_summary(analyze_file(path, DEFAULT_WINDOW_SECONDS))
+            summary = _stem_summary(analyze_file(path, DEFAULT_WINDOW_SECONDS, tempo=False))
             if keep_files:
                 summary["path"] = str(path)
             else:
                 path.unlink(missing_ok=True)
-            stems.append({"index": soloed, "name": channel.get("name"), **summary})
-            _fl("channels.solo", {"index": soloed, "solo": False})
-            soloed = None
+            stems.append({"index": channel["index"], "name": channel.get("name"), **summary})
     finally:
-        problems = []
-        if soloed is not None:
-            problems.append(_put_back("channels.solo", {"index": soloed, "solo": False}))
-        problems.extend(
-            _put_back("channels.mute", {"index": index, "muted": True}) for index in muted
-        )
+        problems = [
+            _put_back("channels.mute", {"index": index, "muted": was_muted[index]})
+            for index, mute in muted.items() if mute != was_muted[index]
+        ]
         problems.extend(
             _put_back("mixer.setEffect", {"track": MASTER_TRACK, "slot": slot, "enabled": True})
             for slot in bypassed
@@ -167,7 +170,7 @@ def render_stems(
     result: dict = {"stems": stems}
     if any(problems):
         result["warning"] = (
-            "Mute and solo states or the master's effects could not all be put back: "
+            "Mute states or the master's effects could not all be put back: "
             + "; ".join(problem for problem in problems if problem)
         )
     return result
@@ -232,8 +235,9 @@ def register_audio_tools(mcp: FastMCP) -> None:
     ) -> dict:
         """Render each channel on its own and measure it, to see what every part adds to the mix.
 
-        Each channel is soloed and rendered like fl_render (pattern or song, per
-        FL's mode), so it is heard through its mixer track and the master. Use
+        Each channel is rendered on its own (every other channel muted, automation
+        left playing) like fl_render (pattern or song, per FL's mode), so it is heard
+        through its mixer track and the master. Use
         it to balance levels: compare the stems' loudness and where their
         energy sits, change channel or mixer volumes, and render again. Takes
         about as long as one fl_render per channel. Windows only.
@@ -273,9 +277,10 @@ def register_audio_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def audio_analyze(path: str, window_seconds: float = DEFAULT_WINDOW_SECONDS) -> dict:
-        """Measure a WAV file: loudness, peaks, frequency balance, stereo image and key.
+        """Measure an audio file: loudness, peaks, frequency balance, stereo image, key, tempo.
 
-        Doesn't touch FL Studio. Returns:
+        Doesn't touch FL Studio. WAV is read directly; MP3, FLAC, OGG and other
+        formats need ffmpeg (on PATH or FL_MCP_FFMPEG). Returns:
             duration_seconds, sample_rate, channels
             loudness_lufs: integrated programme loudness (ITU-R BS.1770)
             peak_dbfs, rms_dbfs, crest_factor_db (peak minus RMS: low = heavily compressed)
@@ -291,9 +296,74 @@ def register_audio_tools(mcp: FastMCP) -> None:
                 sound that has a pitch, "notes"}); null for unpitched sounds.
                 Meant for single sounds and single parts, not for a full mix.
             loudness_over_time: loudness of consecutive windows, to see sections
+            tempo: estimated BPM with a confidence and the alternatives (half,
+                double, 2/3, 3/2) with their scores; which one is meant can
+                depend on the music
 
         Args:
-            path: The .wav file (16/24/32-bit PCM or float).
+            path: The audio file.
             window_seconds: Window length for loudness_over_time.
         """
         return analyze_file(Path(path), window_seconds)
+
+    @mcp.tool()
+    def audio_compare(path: str, reference: str) -> dict:
+        """Measure a mix against a reference track: the same numbers side by side.
+
+        Loudness, peaks, crest factor, the share of energy per frequency band
+        (difference in dB), stereo width, key and tempo, and the largest
+        differences in words. It tells where the two differ, not which is right.
+        Render the mix with fl_render first. Any format audio_analyze reads.
+
+        Returns {"loudness_lufs": {"mix", "reference", "difference"}, ...,
+        "largest_differences": [...]} or {"error"}.
+        """
+        from fl_studio_mcp.audio.compare import compare
+
+        mix = analyze_file(Path(path), DEFAULT_WINDOW_SECONDS)
+        if "error" in mix:
+            return mix
+        ref = analyze_file(Path(reference), DEFAULT_WINDOW_SECONDS)
+        if "error" in ref:
+            return ref
+        return compare(mix, ref)
+
+    @mcp.tool()
+    def audio_extract_melody(path: str, bpm: float | None = None, grid: float = 0.25,
+                             start_seconds: float = 0.0) -> dict:
+        """Turn a recorded melody (one voice or instrument, one note at a time) into notes.
+
+        The result's notes go straight into fl_send_notes (times in beats from
+        `start_seconds` into the file, on the grid). The take's overall detune is
+        taken out and reported as tuning_cents. Chords and full mixes don't work:
+        separate the part first.
+
+        Args:
+            path: The audio file (any format audio_analyze reads).
+            bpm: The tempo the notes are counted in; default: estimated from the file.
+            grid: Grid in beats the notes are put on (0.25 = 16ths).
+            start_seconds: Where beat 0 is in the file.
+
+        Returns {"bpm", "tuning_cents", "notes": [{"midi", "note", "time",
+        "duration", "velocity"}]} or {"error"}.
+        """
+        try:
+            from fl_studio_mcp.audio.decode import load_audio
+            from fl_studio_mcp.audio.melody import extract_melody
+            from fl_studio_mcp.audio.tempo import estimate_tempo
+        except ImportError:
+            return {"error": MISSING_NUMPY}
+        try:
+            samples, rate = load_audio(Path(path))
+            mono = samples.mean(axis=1)
+            if bpm is None:
+                found = estimate_tempo(mono, rate)
+                if found is None:
+                    return {"error": "The file is too short to tell its tempo: give bpm"}
+                bpm = found["bpm"]
+            return extract_melody(mono, rate, bpm, grid, start_seconds)
+        except MemoryError:
+            return {"error": f"Could not read a melody from {path}: not enough memory for a "
+                             "file this long"}
+        except (OSError, ValueError) as e:
+            return {"error": f"Could not read a melody from {path}: {e}"}
