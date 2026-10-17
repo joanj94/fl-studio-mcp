@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from fl_studio_mcp.utils.param_values import find_value
 from fl_studio_mcp.utils.roles import resolve_channel
 
 if TYPE_CHECKING:
@@ -27,6 +28,65 @@ def _plugin_index(index: int | str, slot_index: int) -> int:
     if isinstance(index, str) and index.strip().isdigit():
         return int(index.strip())
     raise ValueError(f"A mixer track must be given by its number, got {index!r}")
+
+
+def param_by_name(conn, plugin_index: int, slot_index: int, param: int | str) -> tuple[int, str]:
+    """(index, name) of a parameter given by index or by name. Raises ValueError.
+
+    A name matches exactly (any case), or else as words of exactly one parameter's name.
+    """
+    if isinstance(param, int) and not isinstance(param, bool):
+        result = conn.send_command("plugins.getParamValue", {
+            "param_index": param, "plugin_index": plugin_index, "slot_index": slot_index,
+        })
+        if not result.get("success", False):
+            raise ValueError(result.get("error") or f"No parameter {param}")
+        return param, result.get("name", "")
+    result = conn.send_command("plugins.getParams", {
+        "index": plugin_index, "slot_index": slot_index, "search": str(param),
+    })
+    if not result.get("success", False):
+        raise ValueError(result.get("error") or "FL Studio didn't list the parameters")
+    found = result.get("params", [])
+    exact = [p for p in found if p["name"].lower().strip() == str(param).lower().strip()]
+    matches = exact or found
+    if len(matches) == 1:
+        return matches[0]["index"], matches[0]["name"]
+    if not matches:
+        raise ValueError(f"No parameter is named {param!r}; fl_get_plugin_params lists them")
+    names = ", ".join(f"{p['index']}: {p['name']}" for p in matches[:10])
+    raise ValueError(f"{param!r} matches several parameters ({names}); give its index")
+
+
+def set_param_by_value(conn, plugin_index: int, slot_index: int, index: int,
+                       value: str) -> dict:
+    """Set parameter `index` to show `value` (see utils/param_values.py).
+
+    Returns {"param", "name", "value", "shows"}; on failure the parameter is put
+    back as it was and ValueError raised.
+    """
+    where = {"param_index": index, "plugin_index": plugin_index, "slot_index": slot_index}
+
+    def get() -> dict:
+        result = conn.send_command("plugins.getParamValue", where)
+        if not result.get("success", False):
+            raise ValueError(result.get("error") or "FL Studio didn't answer")
+        return result
+
+    def read_at(position: float) -> str:
+        result = conn.send_command("plugins.setParamValue", {**where, "value": position})
+        if not result.get("success", False):
+            raise ValueError(result.get("error") or "FL Studio didn't answer")
+        return str(get().get("value_string", ""))
+
+    original = get()
+    try:
+        position, shows = find_value(value, read_at)
+    except ValueError as e:
+        conn.send_command("plugins.setParamValue", {**where, "value": original["value"]})
+        raise ValueError(f"{original.get('name') or index}: {e}") from e
+    return {"param": index, "name": original.get("name", ""), "value": round(position, 6),
+            "shows": shows}
 
 
 def register_plugin_tools(mcp: FastMCP) -> None:
@@ -232,10 +292,49 @@ def register_plugin_tools(mcp: FastMCP) -> None:
         if not result.get("success", False) and "error" in result:
             return f"Error: {result['error']}"
 
+        # Seen live: some plugins report the old value within the setting command.
+        fresh = conn.send_command("plugins.getParamValue", {
+            "param_index": param_index,
+            "plugin_index": plugin_index,
+            "slot_index": slot_index,
+            "use_global": use_global_index,
+        })
+        if fresh.get("success", False) and "value" in fresh:
+            result = fresh
         name = result.get("name", f"Parameter {param_index}")
         new_value = result.get("value", value)
         value_str = result.get("value_string", "")
         return f"Parameter '{name}' set to {new_value:.4f} ({value_str})"
+
+    @mcp.tool()
+    def fl_set_plugin_param_by_value(
+        plugin_index: int | str,
+        param: int | str,
+        value: str,
+        slot_index: int = -1,
+    ) -> dict:
+        """Set a plugin parameter to what it should show, in its own units.
+
+        E.g. "250Hz", "4.5kHz", "-6dB", "1.5sec", "120ms", "35%", "4:1" (a ratio),
+        or a named setting such as "Peaking" or "High pass". The 0-1 position is
+        found by trying values and reading what the plugin shows, so it works
+        for any plugin; numbers take about a second, named settings a few.
+
+        Args:
+            plugin_index: Channel index or role, or the mixer track for an effect.
+            param: Parameter index, or its name ("Band 2 freq"; see fl_get_plugin_params).
+            value: What the parameter should show; use the unit it shows.
+            slot_index: Effect slot on the mixer track (-1 for a channel's plugin).
+
+        Returns {"param", "name", "value" (0-1), "shows"} or {"error"}.
+        """
+        conn = get_connection()
+        try:
+            plugin_index = _plugin_index(plugin_index, slot_index)
+            index, _ = param_by_name(conn, plugin_index, slot_index, param)
+            return set_param_by_value(conn, plugin_index, slot_index, index, value)
+        except ValueError as e:
+            return {"error": str(e)}
 
     @mcp.tool()
     def fl_get_preset_count(

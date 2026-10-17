@@ -25,7 +25,15 @@ from fl_studio_mcp.project.flp import FlpError, parse
 from fl_studio_mcp.project.preset import Point, automation_preset, check_points
 from fl_studio_mcp.project.reader import Project, describe_target, read_project
 from fl_studio_mcp.tools.browser import Load, send_to_channel
-from fl_studio_mcp.utils import fl_browser, fl_channel_rack, fl_playlist, fl_windows, win_focus
+from fl_studio_mcp.tools.plugins import param_by_name
+from fl_studio_mcp.utils import (
+    connection,
+    fl_browser,
+    fl_channel_rack,
+    fl_playlist,
+    fl_windows,
+    win_focus,
+)
 from fl_studio_mcp.utils.connection import call
 from fl_studio_mcp.utils.fl_automation import AutomationError, choose_automation_for_last_tweaked
 from fl_studio_mcp.utils.fl_browser import BrowserError
@@ -85,6 +93,11 @@ def find_project_file(projects_dir: Path, title: str | None) -> Path | None:
         wanted = re.compile(re.escape(title) + r"( \(autosaved on [^)]*\))?\.flp", re.IGNORECASE)
         files = [f for f in files if wanted.fullmatch(f.name)]
     return max(files, key=lambda f: f.stat().st_mtime, default=None)
+
+
+def newest_project_file() -> Path | None:
+    """The newest save (own file or autosave) of the project open in FL."""
+    return find_project_file(_user_dir() / PROJECTS_FOLDER, _fl_project_title())
 
 
 def find_saved_project(projects_dir: Path, title: str) -> Path | None:
@@ -205,12 +218,40 @@ def to_points(points: list[dict], kind: str, parameter: str,
     return start, converted
 
 
-def _target(mixer_track: int | None, channel: int | str | None, parameter: str) -> dict:
-    """What to automate: its kind, index, owner's name and the parameter's current value."""
-    if parameter not in PARAMETER_WORDS:
-        raise ValueError(f"parameter must be one of: {', '.join(PARAMETER_WORDS)}.")
+def _plugin_target(mixer_track: int | None, channel: int | str | None, parameter: int | str,
+                   slot: int | None) -> dict:
+    """A plugin parameter: of a mixer track's effect (with its slot) or a channel's plugin."""
+    if mixer_track is not None:
+        if slot is None:
+            raise ValueError("Give the effect's slot (0-9) to automate one of its parameters.")
+        kind, plugin_index, slot_index = "effect", mixer_track, slot
+        info = call("mixer.getTrackInfo", {"track": mixer_track})
+    else:
+        kind, plugin_index, slot_index = "channel plugin", resolve_channel(channel), -1
+        info = call("channels.getInfo", {"index": plugin_index})
+    if "error" in info:
+        raise ValueError(info["error"])
+    param_index, name = param_by_name(connection.get_connection(), plugin_index, slot_index,
+                                      parameter)
+    current = call("plugins.getParamValue", {"plugin_index": plugin_index,
+                                             "slot_index": slot_index, "param_index": param_index})
+    if "error" in current:
+        raise ValueError(current["error"])
+    # Seen live: FL names the clip "<plugin> - <track> - <parameter>" for an effect and
+    # "<channel> - <parameter>" for a channel's plugin.
+    return {"kind": kind, "index": plugin_index, "slot": slot_index, "param_index": param_index,
+            "owner": info["name"], "value": current["value"], "parameter": name,
+            "expected": f"{info['name']} - {name}"}
+
+
+def _target(mixer_track: int | None, channel: int | str | None, parameter: int | str,
+            slot: int | None = None) -> dict:
+    """What to automate: its kind, index, owner's name, the parameter's current value and
+    the name FL gives a clip linked to it ("expected" is part of it)."""
     if (mixer_track is None) == (channel is None):
         raise ValueError("Give either mixer_track or channel.")
+    if slot is not None or parameter not in PARAMETER_WORDS:
+        return _plugin_target(mixer_track, channel, parameter, slot)
     if mixer_track is not None:
         kind, index = "mixer track", mixer_track
         info = call("mixer.getTrackInfo", {"track": index})
@@ -220,7 +261,8 @@ def _target(mixer_track: int | None, channel: int | str | None, parameter: str) 
     if "error" in info:
         raise ValueError(info["error"])
     return {"kind": kind, "index": index, "owner": info["name"],
-            "value": info[parameter], "parameter": parameter}
+            "value": info[parameter], "parameter": parameter,
+            "expected": f"{info['name']} - {PARAMETER_WORDS[parameter]}"}
 
 
 def _touch(target: dict) -> None:
@@ -230,16 +272,21 @@ def _touch(target: dict) -> None:
     the setting as no change at all.
     """
     parameter, value = target["parameter"], target["value"]
-    top = 1.0  # volume runs 0..1, pan -1..1: both end at 1
+    top = 1.0  # volume and plugin parameters run 0..1, pan -1..1: all end at 1
     nudged = value - TOUCH_STEP if value + TOUCH_STEP > top else value + TOUCH_STEP
-    if target["kind"] == "mixer track":
+    if "param_index" in target:
+        action, key = "plugins.setParamValue", {
+            "plugin_index": target["index"], "slot_index": target["slot"],
+            "param_index": target["param_index"]}
+        field = "value"
+    elif target["kind"] == "mixer track":
         action = "mixer.setTrackVolume" if parameter == "volume" else "mixer.setTrackPan"
-        key = {"track": target["index"]}
+        key, field = {"track": target["index"]}, parameter
     else:
         action = "channels.setVolume" if parameter == "volume" else "channels.setPan"
-        key = {"index": target["index"]}
+        key, field = {"index": target["index"]}, parameter
     for setting in (nudged, value):
-        result = call(action, {**key, parameter: setting})
+        result = call(action, {**key, field: setting})
         if "error" in result:
             raise AutomationError(result["error"])
 
@@ -299,7 +346,7 @@ def _settled_name(index: int, expected: str) -> str:
     deadline = time.monotonic() + NAME_TIMEOUT
     while True:
         name = _channels()[index]["name"]
-        if name.startswith(expected) or time.monotonic() >= deadline:
+        if expected in name or time.monotonic() >= deadline:
             return name
         time.sleep(NAME_POLL_INTERVAL)
 
@@ -310,7 +357,7 @@ def _make_linked_clip(load: Load, target: dict) -> tuple[int, str]:
     A clip for anything else (an unlinked "Auto clip": the tweak wasn't taken) is
     deleted and FL asked again.
     """
-    expected = f"{target['owner']} - {PARAMETER_WORDS[target['parameter']]}"
+    expected = target["expected"]
     made = ""
     for _ in range(CREATE_ATTEMPTS):
         before = _channels()
@@ -318,7 +365,7 @@ def _make_linked_clip(load: Load, target: dict) -> tuple[int, str]:
         choose_automation_for_last_tweaked()
         index = _new_channel(load, before)
         made = _settled_name(index, expected)
-        if made.startswith(expected):
+        if expected in made:
             return index, made
         fl_channel_rack.delete_channels([index])
     raise AutomationError(
@@ -344,7 +391,8 @@ def create_automation(load: Load, target: dict, start_bar: int, points: list[Poi
     return {
         "channel": index,
         "name": name or made,
-        "target": {key: target[key] for key in ("kind", "index", "owner", "parameter")},
+        "target": {key: target[key] for key in ("kind", "index", "slot", "owner", "parameter")
+                   if key in target},
         "start_bar": start_bar,
         "length_bars": round(points[-1].beat / beats_per_bar, DECIMALS),
         "points": len(points),
@@ -405,7 +453,7 @@ def register_automation_tools(mcp: FastMCP) -> None:
         if path:
             file = Path(path).expanduser()
         else:
-            file = find_project_file(_user_dir() / PROJECTS_FOLDER, _fl_project_title())
+            file = newest_project_file()
             if file is None:
                 return {"error": "No saved project found; save the project in FL or give a path."}
         try:
@@ -420,10 +468,11 @@ def register_automation_tools(mcp: FastMCP) -> None:
         points: list[dict],
         mixer_track: int | None = None,
         channel: int | str | None = None,
-        parameter: str = "volume",
+        parameter: str | int = "volume",
         name: str | None = None,
+        slot: int | None = None,
     ) -> dict:
-        """Create an automation clip for a mixer track's or a channel's volume or pan.
+        """Create an automation clip for a volume, a pan or any plugin parameter.
 
         FL makes a clip linked to the parameter and puts it into the playlist at
         the first point's bar (on its bar line: a first point inside a bar is held
@@ -438,13 +487,17 @@ def register_automation_tools(mcp: FastMCP) -> None:
                 "pan": -1 left .. 1 right; optional "tension": -1..1 (0 straight)}.
             mixer_track: The mixer track to automate (0 is the master), or
             channel: a channel index or role.
-            parameter: "volume" or "pan".
+            parameter: "volume" or "pan" (of the mixer track or channel), or any plugin
+                parameter by name or index (fl_get_plugin_params lists them): of the
+                effect in `slot` of `mixer_track`, or of `channel`'s own plugin. A
+                plugin parameter's points take "value" (0-1, as FL stores it).
+            slot: The effect slot (0-9) whose parameter is automated.
             name: Name for the automation clip's channel (FL's is "<track> - Volume").
 
         Returns {"channel", "name", "start_bar", "length_bars", ...} or {"error"}.
         """
         try:
-            target = _target(mixer_track, channel, parameter)
+            target = _target(mixer_track, channel, parameter, slot)
             beats_per_bar = call("project.getInfo").get("beats_per_bar", 4)
             start_bar, converted = to_points(points, target["kind"], parameter, beats_per_bar)
         except (ValueError, RuntimeError) as e:

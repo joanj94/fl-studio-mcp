@@ -20,6 +20,22 @@ def get_generators_dir() -> Path:
     return get_fl_settings_dir().parent / "Presets" / "Plugin database" / "Generators"
 
 
+def get_effects_dir() -> Path:
+    """Folder with one sub-folder per effect category."""
+    return get_generators_dir().parent / "Effects"
+
+
+def effect_browser_path(name: str) -> str:
+    """The browser path of an effect in the plugin database ("Plugin database/Effects/
+    Filter/Fruity Parametric EQ 2"), name matched ignoring case. Raises ValueError."""
+    root = get_effects_dir()
+    wanted = name.strip().lower()
+    for path in sorted(root.glob("*/*")):
+        if path.suffix.lower() == PRESET_SUFFIX and path.stem.lower() == wanted:
+            return f"Plugin database/Effects/{path.parent.name}/{path.stem}"
+    raise ValueError(f"No effect named {name!r} in FL Studio's plugin database ({root})")
+
+
 def list_generators() -> dict[str, str]:
     """Generator name -> category, sorted by name. Raises ValueError if none are found."""
     root = get_generators_dir()

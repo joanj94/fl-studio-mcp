@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 
 # FL Studio API modules (available when running inside FL Studio)
+import arrangement
 import channels
 import general
 import midi
@@ -362,6 +363,28 @@ def dispatch_command(action: str, params: dict) -> dict:
     elif action == "playlist.setTrackMuted":
         return handle_playlist_set_track_muted(params)
 
+    # Markers, pattern cloning, meters, group mute/solo
+    elif action == "arrangement.addMarker":
+        return handle_arrangement_add_marker(params)
+    elif action == "arrangement.jumpToNextMarker":
+        return handle_arrangement_jump_to_next_marker()
+    elif action == "arrangement.getMarkers":
+        return handle_arrangement_get_markers()
+    elif action == "patterns.clone":
+        return handle_patterns_clone(params)
+    elif action == "mixer.getPeaks":
+        return handle_mixer_get_peaks(params)
+    elif action == "mixer.muteAllExcept":
+        return handle_mixer_mute_all_except(params)
+    elif action == "mixer.selectTrack":
+        return handle_mixer_select_track(params)
+    elif action == "mixer.clearMuteSolo":
+        return handle_mixer_clear_mute_solo()
+    elif action == "project.getSnapshot":
+        return handle_project_get_snapshot(params)
+    elif action == "project.applyState":
+        return handle_project_apply_state(params)
+
     else:
         return {"error": f"Unknown action: {action}"}
 
@@ -467,16 +490,18 @@ def handle_mixer_get_track_info(params: dict) -> dict:
 def handle_mixer_get_all_tracks(params: dict) -> dict:
     """The mixer tracks in use: named, with a channel routed to them, or holding an effect.
 
-    `include_empty` lists every track. Each comes with the channels routed to it.
+    `include_empty` lists every track. Each comes with the channels routed to it and,
+    for an insert, the tracks it sends to ("routes"; 0 is the master).
     """
     include_empty = params.get("include_empty", False)
+    last_insert = mixer.trackCount() - 2
     routed = {}
     for channel in range(channels.channelCount(True)):
         track = channels.getTargetFxTrack(channel, True)
         routed.setdefault(track, []).append(channels.getChannelName(channel, True))
 
     tracks = []
-    for i in range(mixer.trackCount()):
+    for i in range(last_insert + 1):  # not FL's "current" track after the inserts
         name = mixer.getTrackName(i)
         named = bool(name) and not name.startswith("Insert ")
         in_use = named or i in routed or any(
@@ -493,6 +518,7 @@ def handle_mixer_get_all_tracks(params: dict) -> dict:
             "is_muted": mixer.isTrackMuted(i) == 1,
             "is_solo": mixer.isTrackSolo(i) == 1,
             "channels": routed.get(i, []),
+            "routes": _routes(i, last_insert) if 1 <= i <= last_insert else [],
         })
 
     return {"tracks": tracks}
@@ -744,6 +770,14 @@ def _plugin_name(channel: int):
     return None
 
 
+def _is_automation(channel: int) -> bool:
+    """True for an automation clip's channel (it plays no sound of its own)."""
+    try:
+        return channels.getChannelType(channel, True) == midi.CT_AutoClip
+    except Exception:
+        return False  # One odd channel shouldn't break the whole channel list.
+
+
 def handle_channels_get_all() -> dict:
     """Get info about all channels."""
     channels_list = []
@@ -757,6 +791,7 @@ def handle_channels_get_all() -> dict:
             "is_selected": channels.isChannelSelected(i, True) == 1,
             "target_fx_track": channels.getTargetFxTrack(i, True),
             "plugin": _plugin_name(i),
+            "is_automation": _is_automation(i),
         })
 
     return {"channels": channels_list}
@@ -1486,6 +1521,13 @@ def handle_browser_navigate(params: dict) -> dict:
             if repeats >= BROWSER_STUCK_REPEATS:
                 return {"items": reached, "found": False, "stuck": True, "pending": []}
             continue
+        if repeats and previous["name"] == until and until_type in (None, previous["file_type"]):
+            # The repeat was a neighbour alike, and the one looked for: step back onto it.
+            back = BROWSER_DIRECTIONS["previous" if direction == BROWSER_DIRECTIONS["next"]
+                                      else "next"]
+            ui.navigateBrowser(back, False)
+            reached.append(previous)
+            return {"items": reached, "found": True, "stuck": False, "pending": []}
         reached.extend([previous] * repeats)
         repeats = 0
         previous = node
@@ -1562,8 +1604,9 @@ MAX_UNDO_STEPS = 50
 def _check_mixer_track(track) -> str:
     if not isinstance(track, int) or isinstance(track, bool):
         return "track must be an integer"
-    if not 0 <= track < mixer.trackCount():
-        return "track must be 0-%d" % (mixer.trackCount() - 1)
+    # The last of trackCount() is FL's "current" track, not one of the mixer's.
+    if not 0 <= track <= _last_insert():
+        return "track must be 0-%d" % _last_insert()
     return ""
 
 
@@ -1732,3 +1775,310 @@ def handle_playlist_set_track_muted(params: dict) -> dict:
         return {"error": "muted must be true or false, got %r" % (muted,)}
     playlist.muteTrack(track, 1 if muted else 0)
     return {"track": track, "is_muted": bool(playlist.isTrackMuted(track))}
+
+
+# =============================================================================
+# Markers, pattern cloning, meters, group mute/solo
+# =============================================================================
+
+MAX_MARKERS = 200
+
+
+def handle_arrangement_add_marker(params: dict) -> dict:
+    """Put a named time marker on the playlist's time line at `bar` (1 = the song's start)."""
+    bar = params.get("bar")
+    name = params.get("name", "")
+    if isinstance(bar, bool) or not isinstance(bar, (int, float)) or bar < 1:
+        return {"error": "bar must be a number of 1 or more, got %r" % (bar,)}
+    if not isinstance(name, str) or not name:
+        return {"error": "name must be a non-empty text"}
+    ticks = int(round((bar - 1) * general.getRecPPB()))
+    arrangement.addAutoTimeMarker(ticks, name)
+    return {"bar": bar, "name": name, "ticks": ticks}
+
+
+def handle_arrangement_get_markers() -> dict:
+    """The time markers' names, in time order (seen live: FL numbers them by position).
+
+    Their positions are found with arrangement.jumpToNextMarker (song mode only).
+    """
+    names = []
+    for index in range(MAX_MARKERS):
+        name = arrangement.getMarkerName(index)
+        if not name:
+            break
+        names.append(name)
+    return {"markers": [{"index": i, "name": n} for i, n in enumerate(names)]}
+
+
+def handle_arrangement_jump_to_next_marker() -> dict:
+    """Move the song position to the next time marker (song mode only).
+
+    Seen live: it steps through the markers by number whatever the delta, wrapping
+    from the last to the first; the position shows the jump only to the next
+    command, and a marker at the song's end reads one tick before it.
+    """
+    arrangement.jumpToMarker(1, False)
+    return {}
+
+
+def handle_patterns_clone(params: dict) -> dict:
+    """Clone a pattern (notes and all); returns the clone's index."""
+    index = params.get("index")
+    error = _check_pattern_index(index)
+    if error:
+        return {"error": error}
+    if patterns.isPatternDefault(index):
+        return {"error": "Pattern %d is empty: there is nothing to clone" % index}
+    before = {p["index"] for p in _used_patterns()}
+    patterns.clonePattern(index)
+    added = sorted({p["index"] for p in _used_patterns()} - before)
+    if len(added) != 1:
+        return {"error": "Cloning pattern %d added patterns %s instead of one" % (index, added)}
+    return {"index": added[0], "source": index, "name": patterns.getPatternName(added[0])}
+
+
+def _last_insert() -> int:
+    # The last of trackCount() is FL's "current" track, not an insert.
+    return mixer.trackCount() - 2
+
+
+def handle_mixer_get_peaks(params: dict) -> dict:
+    """The meters' peaks right now (1.0 = 0 dBFS, the louder side) of `tracks` (default: all)."""
+    last = _last_insert()
+    tracks = params.get("tracks")
+    if tracks is None:
+        tracks = list(range(last + 1))
+    if not isinstance(tracks, list) or not all(_whole(t, 0, last) for t in tracks):
+        return {"error": "tracks must be a list of mixer tracks 0-%d" % last}
+    return {"peaks": [{"track": t, "peak": mixer.getTrackPeaks(t, 2)} for t in tracks]}
+
+
+def _routes(track: int, last: int) -> list:
+    return [d for d in range(last + 1) if d != track and mixer.getRouteSendActive(track, d)]
+
+
+def handle_mixer_mute_all_except(params: dict) -> dict:
+    """Mute every insert track except `tracks` and what they need to be heard.
+
+    Kept are the tracks routed into them (a bus's sources) and the tracks they are
+    routed to on their way to the master (their buses), so a group is heard as it
+    is in the mix. FL's solo isn't used: it can't keep several tracks.
+    """
+    last = _last_insert()
+    tracks = params.get("tracks")
+    if not isinstance(tracks, list) or not tracks or not all(_whole(t, 1, last) for t in tracks):
+        return {"error": "tracks must be a non-empty list of insert tracks 1-%d" % last}
+    routes = {t: _routes(t, last) for t in range(1, last + 1)}
+    keep = set(tracks)
+    for follow in (lambda t: routes[t],  # downstream: the buses
+                   lambda t: [s for s in routes if t in routes[s]]):  # upstream: sources
+        todo = list(tracks)
+        while todo:
+            for other in follow(todo.pop()):
+                if other and other not in keep:
+                    keep.add(other)
+                    todo.append(other)
+    muted = []
+    for t in range(1, last + 1):
+        if t not in keep and not mixer.isTrackMuted(t):
+            mixer.muteTrack(t, 1)
+            muted.append(t)
+    return {"kept": sorted(keep), "muted": muted}
+
+
+def handle_mixer_select_track(params: dict) -> dict:
+    """Select a mixer track (the mixer then shows its effect slots) and scroll to it."""
+    track = params.get("track")
+    error = _check_mixer_track(track)
+    if error:
+        return {"error": error}
+    previous = mixer.trackNumber()
+    mixer.setTrackNumber(track, midi.curfxScrollToMakeVisible)
+    return {"track": mixer.trackNumber(), "name": mixer.getTrackName(track), "previous": previous}
+
+
+def handle_mixer_clear_mute_solo() -> dict:
+    """Unmute and unsolo every mixer track.
+
+    Solos come off first: seen live, taking a solo off puts back the mutes the
+    tracks had before it, also on tracks unmuted in between.
+    """
+    unmuted, unsoloed = [], []
+    tracks = range(_last_insert() + 1)
+    for t in tracks:
+        if mixer.isTrackSolo(t):
+            mixer.soloTrack(t, 0)
+            unsoloed.append(t)
+    for t in tracks:
+        if mixer.isTrackMuted(t):
+            mixer.muteTrack(t, 0)
+            unmuted.append(t)
+    return {"unmuted": unmuted, "unsoloed": unsoloed}
+
+
+# =============================================================================
+# Snapshots: the mixer's and the rack's settings, read and put back in one command
+# =============================================================================
+
+MAX_SNAPSHOT_PARAMS = 1024  # parameters kept per effect (a VST lists up to 4240)
+SNAPSHOT_TOLERANCE = 1e-6
+MIX_TOLERANCE = 0.002  # the mix is read back on another scale than it is set on
+
+
+def _effect_params(track: int, slot: int) -> dict:
+    count = plugins.getParamCount(track, slot, True)
+    kept = min(count, MAX_SNAPSHOT_PARAMS)
+    return {
+        "params": [plugins.getParamValue(p, track, slot, True) for p in range(kept)],
+        "params_truncated": count > kept,
+    }
+
+
+def handle_project_get_snapshot(params: dict) -> dict:
+    """The settings a snapshot keeps: every mixer track in use (level, pan, mute,
+    solo, name, routes, effects with their parameters) and every channel."""
+    with_params = params.get("params", True)
+    tracks = handle_mixer_get_all_tracks({})["tracks"]
+    for track in tracks:
+        track["effects"] = _track_effects(track["index"])
+        if with_params:
+            for effect in track["effects"]:
+                effect.update(_effect_params(track["index"], effect["slot"]))
+    rack = [
+        {
+            "index": i,
+            "name": channels.getChannelName(i, True),
+            "volume": channels.getChannelVolume(i, useGlobalIndex=True),
+            "pan": channels.getChannelPan(i, True),
+            "is_muted": channels.isChannelMuted(i, True) == 1,
+            "target_fx_track": channels.getTargetFxTrack(i, True),
+        }
+        for i in range(channels.channelCount(True))
+    ]
+    return {"tracks": tracks, "channels": rack}
+
+
+def _differs(now, wanted, tolerance: float = SNAPSHOT_TOLERANCE) -> bool:
+    return isinstance(wanted, (int, float)) and abs(now - wanted) > tolerance
+
+
+def _apply_routes(t: int, routes: list, last: int) -> int:
+    changed = 0
+    for dest in range(last + 1):
+        if dest != t and bool(mixer.getRouteSendActive(t, dest)) != (dest in routes):
+            mixer.setRouteTo(t, dest, dest in routes)
+            changed += 1
+    if changed:
+        mixer.afterRoutingChanged()
+    return changed
+
+
+def _apply_effects(t: int, effects: list, skipped: list) -> int:
+    changed = 0
+    current = {e["slot"]: e for e in _track_effects(t)}
+    for effect in effects:
+        slot = effect.get("slot")
+        now = current.get(slot)
+        if now is None or now["plugin"] != effect.get("plugin"):
+            skipped.append("track %d slot %s: %s isn't there any more"
+                           % (t, slot, effect.get("plugin")))
+            continue
+        if now["enabled"] != effect.get("enabled", now["enabled"]):
+            handle_mixer_set_effect({"track": t, "slot": slot, "enabled": effect["enabled"]})
+            changed += 1
+        if _differs(now["mix"], effect.get("mix"), MIX_TOLERANCE):
+            handle_mixer_set_effect({"track": t, "slot": slot, "mix": effect["mix"]})
+            changed += 1
+        count = plugins.getParamCount(t, slot, True)
+        for p, value in enumerate(effect.get("params", [])[:count]):
+            if _differs(plugins.getParamValue(p, t, slot, True), value):
+                # The 5th argument is pickupMode (see handle_plugins_set_param_value).
+                plugins.setParamValue(value, p, t, slot, midi.PIM_None, True)
+                changed += 1
+    return changed
+
+
+def _apply_track(track: dict, last: int, skipped: list) -> int:
+    t = track["index"]
+    changed = 0
+    name = track.get("name")
+    default = "Master" if t == 0 else "Insert %d" % t
+    if isinstance(name, str) and mixer.getTrackName(t) != name:
+        mixer.setTrackName(t, "" if name == default else name)
+        changed += 1
+    if _differs(mixer.getTrackVolume(t), track.get("volume")):
+        mixer.setTrackVolume(t, track["volume"])
+        changed += 1
+    if _differs(mixer.getTrackPan(t), track.get("pan")):
+        mixer.setTrackPan(t, track["pan"])
+        changed += 1
+    if 1 <= t <= last and isinstance(track.get("routes"), list):
+        changed += _apply_routes(t, track["routes"], last)
+    return changed + _apply_effects(t, track.get("effects", []), skipped)
+
+
+def _apply_mutes_and_solos(tracks: list, last: int) -> int:
+    """Solos come off first: taking a solo off puts back the mutes from before it."""
+    changed = 0
+    for t in range(last + 1):
+        if mixer.isTrackSolo(t):
+            mixer.soloTrack(t, 0)
+            changed += 1
+    for track in tracks:
+        if "is_muted" in track and (mixer.isTrackMuted(track["index"]) == 1) != track["is_muted"]:
+            mixer.muteTrack(track["index"], 1 if track["is_muted"] else 0)
+            changed += 1
+    for track in tracks:
+        if track.get("is_solo"):
+            mixer.soloTrack(track["index"], 1, 3)  # as handle_mixer_solo_track
+            changed += 1
+    return changed
+
+
+def _apply_channel(channel: dict, last: int) -> int:
+    i = channel["index"]
+    changed = 0
+    if isinstance(channel.get("name"), str) and channels.getChannelName(i, True) != channel["name"]:
+        channels.setChannelName(i, channel["name"], True)
+        changed += 1
+    if _differs(channels.getChannelVolume(i, useGlobalIndex=True), channel.get("volume")):
+        channels.setChannelVolume(i, channel["volume"], useGlobalIndex=True)
+        changed += 1
+    if _differs(channels.getChannelPan(i, True), channel.get("pan")):
+        channels.setChannelPan(i, channel["pan"], useGlobalIndex=True)
+        changed += 1
+    if "is_muted" in channel and (channels.isChannelMuted(i, True) == 1) != channel["is_muted"]:
+        channels.muteChannel(i, 1 if channel["is_muted"] else 0, True)
+        changed += 1
+    target = channel.get("target_fx_track")
+    if _whole(target, 0, last) and channels.getTargetFxTrack(i, True) != target:
+        channels.setTargetFxTrack(i, target, True)
+        changed += 1
+    return changed
+
+
+def handle_project_apply_state(params: dict) -> dict:
+    """Put back what project.getSnapshot read; only what differs is changed.
+
+    Channels are given by their index now (the server matches them by name).
+    Effects whose slot holds another plugin now are skipped and listed.
+    """
+    tracks = params.get("tracks", [])
+    rack = params.get("channels", [])
+    last = _last_insert()
+    count = channels.channelCount(True)
+    if not isinstance(tracks, list) or not all(
+        isinstance(t, dict) and _whole(t.get("index"), 0, last) for t in tracks
+    ):
+        return {"error": "tracks must be a list of mixer tracks 0-%d" % last}
+    if not isinstance(rack, list) or not all(
+        isinstance(c, dict) and _whole(c.get("index"), 0, count - 1) for c in rack
+    ):
+        return {"error": "channels must be a list of channels 0-%d" % (count - 1)}
+    skipped = []
+    changed = sum(_apply_track(track, last, skipped) for track in tracks)
+    if tracks:  # restoring channels only leaves every mute and solo as it is
+        changed += _apply_mutes_and_solos(tracks, last)
+    changed += sum(_apply_channel(channel, last) for channel in rack)
+    return {"changed": changed, "skipped": skipped}

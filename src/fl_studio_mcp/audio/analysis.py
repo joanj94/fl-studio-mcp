@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 
 from fl_studio_mcp.audio.pitch import estimate_pitch
+from fl_studio_mcp.audio.tempo import estimate_tempo
 
 # ITU-R BS.1770 loudness: 400 ms blocks overlapping by 75%, gated at -70 LUFS
 # and at 10 LU below the level of the blocks that pass that first gate.
@@ -238,8 +239,11 @@ def _plain(value: Any) -> Any:
     return value
 
 
-def analyze(samples: np.ndarray, rate: int, window: float = 4.0) -> dict:
-    """All measurements of a piece of audio as one JSON-friendly dict."""
+def analyze(samples: np.ndarray, rate: int, window: float = 4.0, tempo: bool = True) -> dict:
+    """All measurements of a piece of audio as one JSON-friendly dict.
+
+    `tempo` adds a tempo estimate (about a second for a song); stems leave it out.
+    """
     if samples.ndim != 2 or not len(samples):
         raise ValueError("The audio is empty")
     if len(samples) / rate > MAX_ANALYSIS_SECONDS:
@@ -271,4 +275,5 @@ def analyze(samples: np.ndarray, rate: int, window: float = 4.0) -> dict:
         "key": _estimate_key(power, frequencies),
         "pitch": estimate_pitch(mono, rate),
         "loudness_over_time": loudness_timeline(weighted, rate, window),
+        **({"tempo": estimate_tempo(mono, rate)} if tempo else {}),
     })

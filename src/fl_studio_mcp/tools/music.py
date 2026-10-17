@@ -6,8 +6,10 @@ generate, combine and preview material before writing it to the piano roll.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
+from fl_studio_mcp.music.midi_file import write_midi
 from fl_studio_mcp.music.model import Note, pitch_name
 from fl_studio_mcp.music.rhythm import rhythm_notes, roll
 from fl_studio_mcp.music.theory import (
@@ -234,3 +236,26 @@ def register_music_tools(mcp: FastMCP) -> None:
             return _notes_result(apply_operations(parsed, operations))
 
         return _safe(build)
+
+    @mcp.tool()
+    def music_export_midi(tracks: list[dict], path: str, bpm: float,
+                          beats_per_bar: int = 4) -> dict:
+        """Write notes as a standard MIDI file (.mid), one track per part.
+
+        For handing material to other software; doesn't touch FL Studio (to
+        export what is in FL's patterns, use fl_export_midi).
+
+        Args:
+            tracks: [{"name": "Lead", "notes": [...]}, {"name": "Drums", "drums": true,
+                "notes": [...]}]; notes in fl_send_notes format. "drums" puts a
+                track on MIDI channel 10.
+            path: Where to write it; must end in .mid.
+            bpm: The tempo written into the file.
+            beats_per_bar: Time signature numerator (quarter-note beats).
+
+        Returns {"path", "tracks", "notes"} or {"error"}.
+        """
+        try:
+            return write_midi(Path(path), tracks, bpm, beats_per_bar)
+        except (OSError, ValueError) as e:
+            return {"error": str(e)}

@@ -37,6 +37,7 @@ SUBMENU_SETTLE = 0.05
 CLICK_SETTLE = 0.03
 CHECK_TIMEOUT = 2.0  # seconds for the song's length to show what was placed
 SHOW_DELAY = 0.3
+MIN_GRID_HEIGHT = 300  # px of clip area below which the playlist is maximized first
 
 # The playlist menu's entries, counted down from the first one (Edit).
 SNAP_ROW = 3
@@ -58,9 +59,22 @@ ZOOM_OUT_FAR_ROW = 5
 
 # A click this far right of the clip area's edge is inside the first bar showing.
 CLICK_INSET = 4
-# The time ruler lies between the scroll bar and the clip area.
-RULER_ABOVE_GRID = 10
+# The time ruler lies between the scroll bar and the clip area: its upper row holds the
+# bar numbers, its lower one the time markers' labels. Seen live: a click on a
+# marker's label doesn't move the song position, so the bar numbers are clicked.
+RULER_ABOVE_GRID = 26
 SCROLL_TIMEOUT = 2.0  # seconds for the playlist to scroll to a bar
+# Reading a cell from the playlist's picture (seen live, FL 2026's default theme).
+EMPTY_BACKGROUNDS = ((52, 68, 78), (50, 66, 76))  # the clip area's empty rows (RGB)
+COLOUR_TOLERANCE = 6
+CELL_INSET = 4  # px further right than a placing click: inside the bar, past its line
+CELL_COLUMNS = 3
+CELL_COLUMN_STEP = 3
+CELL_HALF_HEIGHT = 30
+CLIP_SHARE = 0.2  # at most this much empty background: a clip is there
+EMPTY_SHARE = 0.4  # at least this much: the cell is empty
+# A pattern clip's menu ends Delete, "Use current time signature from", Select region, Chop.
+CLIP_DELETE_KEYS = (fl_windows.VK_END, *[fl_windows.VK_UP] * 3, fl_windows.VK_RETURN)
 SCROLL_SETTLE = 0.5  # seconds a scroll is given when it can't be checked
 # A header click that selects nothing is tried again this many pixels higher.
 HEADER_NUDGE = 8
@@ -130,6 +144,20 @@ def _walk(to_submenu: tuple[int, ...], in_submenu: tuple[int, ...]) -> bool | No
         fl_windows.close_popup_menus()  # no menu may be left open, whatever happened
 
 
+def _choose_in_open_menu(keys: tuple[int, ...], what: str) -> None:
+    """Walk the one open menu with `keys`, the last of which chooses; raises PlaylistError."""
+    try:
+        for key in keys[:-1]:
+            if not fl_windows.press_in_popup_menu(key, menus=1):
+                raise PlaylistError(f"Could not {what}: the menu closed unexpectedly")
+        if fl_windows.pointer_over_menu():
+            raise PlaylistError(f"Could not {what}: the mouse pointer is over FL Studio's menu")
+        if not fl_windows.press_in_popup_menu(keys[-1], menus=1, chooses=True):
+            raise PlaylistError(f"Could not {what}: the menu did not take the choice")
+    finally:
+        fl_windows.close_popup_menus()
+
+
 def _choose(to_submenu: tuple[int, ...], in_submenu: tuple[int, ...], what: str) -> None:
     """Choose an entry of one of the playlist menu's submenus; raises PlaylistError."""
     for _ in range(ATTEMPTS):
@@ -167,6 +195,11 @@ def open_panel() -> PlaylistPanel:
     if hidden:
         time.sleep(SHOW_DELAY)
     panel = fl_windows.playlist_panel()
+    if panel is not None and panel.grid_bottom - panel.grid_top < MIN_GRID_HEIGHT:
+        # Seen live: in a fresh template the playlist was too small to zoom.
+        fl_windows.maximize_window(panel.hwnd)
+        time.sleep(SHOW_DELAY)
+        panel = fl_windows.playlist_panel()
     if panel is None:
         raise PlaylistError(
             "The playlist isn't showing inside FL Studio's main window (a detached or "
@@ -198,8 +231,34 @@ def show_whole_song() -> None:
     time.sleep(SHOW_DELAY)
 
 
-def clear() -> None:
-    """Delete every clip in the playlist."""
+def marker_extent() -> float:
+    """How far the time markers make the song reach, in bars (0: no markers). Song mode.
+
+    A marker makes the song at least as long as its position (seen live: with no
+    clips, a marker at bar 5 made the song 4 bars), and markers can't be deleted
+    through the API. Each jump shows only to the next command, and a marker at
+    the song's end reads one tick before it, which counts as the end.
+    """
+    markers = _fl("arrangement.getMarkers").get("markers", [])
+    if not markers:
+        return 0.0
+    song = state()
+    furthest = 0
+    for _ in markers:  # the jumps go round all of them, from wherever they start
+        _fl("arrangement.jumpToNextMarker")
+        furthest = max(furthest, _fl("playlist.getSongPosition")["ticks"])
+    if furthest >= song["length_ticks"] - 1:
+        furthest = song["length_ticks"]
+    return furthest / song["bar_ticks"]
+
+
+def clear(floor: float = 0.0) -> None:
+    """Delete every clip in the playlist.
+
+    `floor` is how long the time markers alone make the song (`marker_extent`):
+    the song is that long once the clips are gone, and clips inside it don't show
+    in the length, so with markers the delete is always made.
+    """
     if state()["length_bars"] == 0:
         return
     select = _submenu_keys(SELECT_ROW)
@@ -207,17 +266,23 @@ def clear() -> None:
     try:
         for _ in range(ATTEMPTS):
             _choose((EDIT_KEY,), (DELETE_KEY,), "delete the playlist's clips")
-            left = _wait_for_length(0)
-            if not left:
+            left = _wait_for_length(floor)
+            if left <= floor + LENGTH_TOLERANCE_BARS:
                 break
             # The letter went unheard and the menu is still open; it only shows
             # as open once it can no longer be one that is fading after a choice.
             time.sleep(fl_windows.MENU_FADE_SECONDS)
             fl_windows.close_popup_menus()
         else:
+            markers = f" (the time markers alone make it {floor:g})" if floor else ""
             raise PlaylistError(
-                f"The playlist could not be emptied: the song is still {left:g} bars"
+                f"The playlist could not be emptied: the song is still {left:g} bars{markers}"
             )
+        if floor:
+            # The markers keep the song as long as it was, so a Delete that went unheard
+            # doesn't show: it is chosen again (on clips already deleted it does nothing).
+            time.sleep(fl_windows.MENU_FADE_SECONDS)
+            _choose((EDIT_KEY,), (DELETE_KEY,), "delete the playlist's clips")
     except PlaylistError:
         try:
             _deselect()
@@ -367,6 +432,96 @@ def place_clips(panel: PlaylistPanel, y: int, bars: list[int], bar_ticks: int) -
     for bar in sorted(bars, reverse=True):
         x = _aim(panel, bar, bar_ticks)
         _click(panel, x, y)
+
+
+def _empty_share(panel: PlaylistPanel, x: int, y: int) -> float:
+    """How much of a small patch of the clip area shows its empty background (0-1).
+
+    FL's API can't read clips, so a cell is read from a picture of the playlist.
+    Seen live: an empty cell reads 0.5-1 (beat lines take the rest), a cell
+    under a clip 0 (its body is darker than the background).
+    """
+    from fl_studio_mcp.utils import fl_capture, win_focus
+
+    user32, _ = win_focus._libraries()
+    width, height, pixels = fl_capture._window_pixels(user32, panel.hwnd)
+    seen = empty = 0
+    for column in range(x, x + CELL_COLUMNS * CELL_COLUMN_STEP, CELL_COLUMN_STEP):
+        for row in range(max(y - CELL_HALF_HEIGHT, 0), min(y + CELL_HALF_HEIGHT, height)):
+            i = (row * width + min(column, width - 1)) * 4
+            colour = (pixels[i + 2], pixels[i + 1], pixels[i])
+            seen += 1
+            empty += any(
+                max(abs(a - b) for a, b in zip(colour, background)) <= COLOUR_TOLERANCE
+                for background in EMPTY_BACKGROUNDS
+            )
+    return empty / seen if seen else 0.0
+
+
+def _settled_aim(panel: PlaylistPanel, bar: int, bar_ticks: int) -> int:
+    """`_aim`, then a pause for the smooth scroll to end: a single click must land
+    on its bar, not on the one before (seen live: it deleted bar 1's clip)."""
+    _aim(panel, bar, bar_ticks)
+    time.sleep(SCROLL_SETTLE)
+    return _aim(panel, bar, bar_ticks) + CELL_INSET
+
+
+def _has_clip(panel: PlaylistPanel, x: int, y: int) -> bool:
+    share = _empty_share(panel, x, y)
+    if CLIP_SHARE < share < EMPTY_SHARE:
+        raise PlaylistError("The playlist's picture is unclear there (is something over it?)")
+    return share <= CLIP_SHARE
+
+
+def _wait_for_cell(panel: PlaylistPanel, x: int, y: int, clip: bool) -> bool:
+    deadline = time.monotonic() + CHECK_TIMEOUT
+    while _has_clip(panel, x, y) != clip:
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(POLL_INTERVAL)
+    return True
+
+
+def delete_clip(panel: PlaylistPanel, track: int, bar: int) -> None:
+    """Delete the clip that covers `bar` on playlist track `track` (a right-click with
+    the draw tool); raises PlaylistError. The bar must lie inside the song."""
+    bar_ticks = state()["bar_ticks"]
+    y = find_track(panel, track)
+    x = _settled_aim(panel, bar, bar_ticks)
+    if not _has_clip(panel, x, y):
+        raise PlaylistError(f"There is no clip at bar {bar} of playlist track {track}")
+    if fl_windows.popup_menu_count() != 0:
+        raise PlaylistError("FL Studio has a menu open. Close it and try again.")
+    fl_windows.right_click_in_window(panel.hwnd, x, y)
+    # Seen live: on the clip's body a right-click deletes it; on its title strip (the
+    # point found for a track can lie there) it opens the clip's menu instead.
+    if _wait_for_menus(1):
+        _choose_in_open_menu(CLIP_DELETE_KEYS, "delete the clip")
+    if not _wait_for_cell(panel, x, y, clip=False):
+        raise PlaylistError(f"The clip at bar {bar} of playlist track {track} is still there")
+
+
+def add_clip(panel: PlaylistPanel, track: int, bar: int, length_bars: float) -> None:
+    """Put a clip of the active pattern at `bar` of playlist track `track`; raises
+    PlaylistError. Snap must be on Bar. A clip past the song's end is checked by the
+    length it gives the song, one inside it by a picture of its cell."""
+    song = state()
+    y = find_track(panel, track)
+    end = bar - 1 + length_bars
+    if bar - 1 >= song["length_bars"]:  # nothing to aim at out there
+        place_last_clip(panel, y, bar, end)
+        return
+    x = _settled_aim(panel, bar, song["bar_ticks"])
+    if _has_clip(panel, x, y):
+        raise PlaylistError(f"Bar {bar} of playlist track {track} already holds a clip")
+    _click(panel, x, y)
+    if not _wait_for_cell(panel, x, y, clip=True):
+        raise PlaylistError(f"No clip appeared at bar {bar} of playlist track {track}")
+    if end > song["length_bars"] + LENGTH_TOLERANCE_BARS:
+        length = _wait_for_length(end)
+        if abs(length - end) > LENGTH_TOLERANCE_BARS:
+            raise PlaylistError(f"The song is {length:g} bars after adding a clip that ends "
+                                f"at {end:g}")
 
 
 def close_menus_left_open() -> None:

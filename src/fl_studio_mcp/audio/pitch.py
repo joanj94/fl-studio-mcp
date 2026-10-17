@@ -83,6 +83,33 @@ def _pitched_frames(mono: np.ndarray, rate: int) -> tuple[np.ndarray, int]:
     return np.array(pitches), len(sounding)
 
 
+def pitch_track(mono: np.ndarray, rate: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(frame start times in seconds, MIDI pitch with fraction or NaN, level in dB) per frame.
+
+    Frames are FRAME_SECONDS long every HOP_SECONDS; a frame is pitched when it
+    repeats itself clearly (MIN_CLARITY) and isn't QUIET_DB below the loudest.
+    """
+    mono = np.asarray(mono, dtype=float)
+    size = int(round(FRAME_SECONDS * rate))
+    hop = max(1, int(round(HOP_SECONDS * rate)))
+    if len(mono) < size:
+        return np.empty(0), np.empty(0), np.empty(0)
+    starts = np.arange(0, len(mono) - size + 1, hop)
+    squares = np.concatenate([[0.0], np.cumsum(mono ** 2)])
+    powers = (squares[starts + size] - squares[starts]) / size
+    levels = 10 * np.log10(np.maximum(powers, 1e-12))
+    pitches = np.full(len(starts), np.nan)
+    if powers.max() > 0:
+        floor = powers.max() * 10 ** (QUIET_DB / 10)
+        for i, start in enumerate(starts):
+            if powers[i] < floor:
+                continue
+            found = _frame_pitch(mono[start:start + size], rate)
+            if found and found[1] >= MIN_CLARITY:
+                pitches[i] = A4_MIDI + SEMITONES * float(np.log2(found[0] / A4_HZ))
+    return starts / rate, pitches, levels
+
+
 def _most_common(notes: np.ndarray) -> int:
     values, counts = np.unique(notes, return_counts=True)
     return int(values[np.argmax(counts)])

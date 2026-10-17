@@ -37,9 +37,15 @@ def test_a_channel_plugin_can_be_addressed_by_role(tools, fl):
     message = tools["fl_set_plugin_param_value"](param_index=3, value=0.5, plugin_index="lead")
 
     assert message == "Parameter 'Cutoff' set to 0.5000 (50%)"
-    assert _plugin_commands(fl) == [("plugins.setParamValue", {
-        "param_index": 3, "value": 0.5, "plugin_index": 5, "slot_index": -1, "use_global": True,
-    })]
+    assert _plugin_commands(fl) == [
+        ("plugins.setParamValue", {
+            "param_index": 3, "value": 0.5, "plugin_index": 5, "slot_index": -1,
+            "use_global": True,
+        }),
+        ("plugins.getParamValue", {  # the fresh read
+            "param_index": 3, "plugin_index": 5, "slot_index": -1, "use_global": True,
+        }),
+    ]
 
 
 def test_every_plugin_tool_resolves_roles(tools, fl):
@@ -84,3 +90,14 @@ def test_unknown_roles_are_reported_where_the_tool_can(tools, fl):
     assert "tuba" in tools["fl_get_plugin_params"]("tuba")[0]["error"]
     assert "tuba" in tools["fl_get_plugin_param_value"](0, "tuba")["error"]
     assert _plugin_commands(fl) == []
+
+
+def test_set_value_reports_a_fresh_read(tools, fl):
+    # Seen live: some plugins report the old value within the setting command.
+    fl.results["plugins.setParamValue"] = {"name": "Ratio", "value": 0.5, "value_string": "1:1.0"}
+    fl.results["plugins.getParamValue"] = {"name": "Ratio", "value": 0.75, "value_string": "3.3:1"}
+
+    message = tools["fl_set_plugin_param_value"](param_index=9, value=0.75, plugin_index=10,
+                                                 slot_index=1)
+
+    assert message == "Parameter 'Ratio' set to 0.7500 (3.3:1)"

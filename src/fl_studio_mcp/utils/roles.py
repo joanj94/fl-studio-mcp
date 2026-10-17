@@ -47,6 +47,20 @@ def match_role(role: str, channels: list[dict]) -> dict:
     raise ValueError(f"No channel matches role {role!r}. Channels: {names}")
 
 
+def matches_group(group: str, names: list[str]) -> bool:
+    """True if any of `names` holds one of the group's words, as whole words.
+
+    A group is one or more comma-separated roles: "drums" or "kick, clap, hat".
+    Unlike a role, a group may match many tracks or channels.
+    """
+    words = [normalize(word) for word in group.split(",")]
+    words = [word for word in words if word]
+    if not words:
+        raise ValueError(f"Group must contain letters or digits, got {group!r}")
+    padded = [f" {normalize(name)} " for name in names if name]
+    return any(f" {word} " in name for word in words for name in padded)
+
+
 def check_roles(roles: list[str], channels: list[dict]) -> dict:
     """Sort roles into found, missing and ambiguous for the given channels."""
     found: dict[str, dict] = {}

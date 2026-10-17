@@ -27,7 +27,10 @@ from fl_studio_mcp.tools import (
     register_browser_tools,
     register_channel_setup_tools,
     register_channel_tools,
+    register_group_tools,
+    register_mix_check_tools,
     register_mixer_tools,
+    register_mixing_tools,
     register_music_tools,
     register_pattern_tools,
     register_piano_roll_tools,
@@ -35,11 +38,13 @@ from fl_studio_mcp.tools import (
     register_project_tools,
     register_roles_tools,
     register_screen_tools,
+    register_snapshot_tools,
     register_style_tools,
     register_transport_tools,
     register_tuning_tools,
+    register_vocal_tools,
 )
-from fl_studio_mcp.utils.connection import get_connection, reset_connection
+from fl_studio_mcp.utils.connection import call, get_connection, reset_connection
 
 # Create the MCP server
 mcp = FastMCP(
@@ -146,6 +151,41 @@ def get_project_info() -> dict:
         return {"error": str(e)}
 
 
+def _read_resource(action: str, params: dict | None = None) -> dict:
+    """A read command's result for a resource, or {"error"} when FL can't be reached."""
+    conn = get_connection()
+    if not conn.is_connected:
+        return {"error": conn.connection_error}
+    try:
+        return call(action, params)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.resource("fl://transport")
+def get_transport() -> dict:
+    """Playing/recording, song position and pattern or song mode."""
+    return _read_resource("transport.getStatus")
+
+
+@mcp.resource("fl://channels")
+def get_channels() -> dict:
+    """The channel rack: index, name, mute, selection, mixer track, plugin of every channel."""
+    return _read_resource("channels.getAll")
+
+
+@mcp.resource("fl://mixer")
+def get_mixer() -> dict:
+    """The mixer tracks in use with levels, routed channels and routes."""
+    return _read_resource("mixer.getAllTracks")
+
+
+@mcp.resource("fl://patterns")
+def get_patterns() -> dict:
+    """The patterns in use (index, name, length in beats) and the active one."""
+    return _read_resource("patterns.getAll")
+
+
 # Connection management tools
 @mcp.tool()
 def fl_connect() -> str:
@@ -195,6 +235,9 @@ def fl_connection_status() -> dict:
 # Register all tools
 register_transport_tools(mcp)
 register_mixer_tools(mcp)
+register_group_tools(mcp)
+register_mixing_tools(mcp)
+register_mix_check_tools(mcp)
 register_channel_tools(mcp)
 register_channel_setup_tools(mcp)
 register_browser_tools(mcp)
@@ -209,7 +252,9 @@ register_pattern_tools(mcp)
 register_roles_tools(mcp)
 register_style_tools(mcp)
 register_tuning_tools(mcp)
+register_vocal_tools(mcp)
 register_screen_tools(mcp)
+register_snapshot_tools(mcp)
 
 
 def main():

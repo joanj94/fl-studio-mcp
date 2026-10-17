@@ -27,11 +27,13 @@ SYSTEM_DIALOG_CLASS = "#32770"
 PIANO_ROLL_TITLE = "Piano roll"
 PLAYLIST_TITLE = "Playlist"
 CHANNEL_RACK_TITLE = "Channel rack"
+MIXER_TITLE = "Mixer"
 BROWSER_TITLE = "Browser"
 BROWSER_TREE_CLASS = "TDataBrowserTree"  # the browser's list of folders and files
 # A point on the browser tree's first row (pixels from the tree's top-left corner).
 BROWSER_ROW_OFFSET = (60, 10)
 CHANNEL_LIST_CLASS = "TVectorPanel"  # the rack's list of channels (and some of its bars)
+PANEL_CLASS = "TVectorPanel"  # the parts FL draws itself, e.g. the mixer's slot list
 EDITOR_PANEL_CLASS = "TEventEditForm"  # the piano roll's and the playlist's window
 # In the playlist: the box above the track headers, left of the time ruler.
 PLAYLIST_CORNER_CLASS = "TWPControl"
@@ -51,6 +53,8 @@ _WM_RBUTTONDOWN = 0x0204
 _WM_RBUTTONUP = 0x0205
 _MK_RBUTTON = 0x0002
 _WM_CLOSE = 0x0010
+_WM_SYSCOMMAND = 0x0112
+_SC_MAXIMIZE = 0xF030
 _WM_SETTEXT = 0x000C
 _WM_COMMAND = 0x0111
 _IDOK = 1
@@ -378,6 +382,16 @@ def click_in_window(hwnd: int, x: int, y: int) -> bool:
     return _post_click(win_focus._libraries()[0], hwnd, (x, y))
 
 
+def maximize_window(hwnd: int) -> bool:
+    """Maximize one of FL's panels inside its main window, by posted WM_SYSCOMMAND.
+
+    Seen live: a fresh template's playlist was too small for its zoom menu to
+    work; maximized, it worked.
+    """
+    user32, _ = win_focus._libraries()
+    return bool(user32.PostMessageW(wintypes.HWND(hwnd), _WM_SYSCOMMAND, _SC_MAXIMIZE, 0))
+
+
 def press_key_in_window(hwnd: int, virtual_key: int) -> bool:
     """Press a key in one of FL's windows, by posted message."""
     user32, _ = win_focus._libraries()
@@ -397,6 +411,19 @@ def click_channel_rack_menu_arrow() -> bool:
     user32, kernel32 = win_focus._libraries()
     main = win_focus.find_fl_window(user32, kernel32)
     return main is not None and click_panel_menu_arrow(user32, main, CHANNEL_RACK_TITLE)
+
+
+# Seen live (FL 2026, 100 % scaling): the rack's group filter ("Unsorted") lies in its
+# caption, about 144 px from the left; its menu lists All, Automation, Unsorted.
+CHANNEL_RACK_FILTER_OFFSET = (144, 13)
+
+
+def click_channel_rack_filter() -> bool:
+    """Open the channel rack's group filter menu. False if no channel rack is showing."""
+    user32, kernel32 = win_focus._libraries()
+    main = win_focus.find_fl_window(user32, kernel32)
+    found = None if main is None else panel_caption(user32, main, CHANNEL_RACK_TITLE)
+    return found is not None and _post_click(user32, found[0], CHANNEL_RACK_FILTER_OFFSET)
 
 
 def click_browser_menu_arrow() -> bool:
@@ -437,6 +464,30 @@ def channel_list_panel() -> tuple[int, int] | None:
         return None
     height, _width, hwnd = max(panels, key=lambda panel: panel[0] * panel[1])
     return hwnd, height
+
+
+def mixer_slot_panel() -> tuple[int, int] | None:
+    """Handle and height of the mixer's list of effect slots (of the selected track).
+
+    Seen live: the mixer's form has several `TVectorPanel` children; the slot
+    list is the one that lies inside another (the column on the right).
+    """
+    user32, kernel32 = win_focus._libraries()
+    main = win_focus.find_fl_window(user32, kernel32)
+    found = None if main is None else panel_caption(user32, main, MIXER_TITLE)
+    if found is None:
+        return None
+    form = user32.GetParent(wintypes.HWND(found[0]))
+    rects = {hwnd: _rect(user32, hwnd) for hwnd in _visible_children(user32, form, PANEL_CLASS)}
+    inner = [
+        hwnd for hwnd, (left, top, right, bottom) in rects.items()
+        if any(other != hwnd and o[0] <= left and o[1] < top and right <= o[2] and bottom < o[3]
+               for other, o in rects.items())
+    ]
+    if len(inner) != 1:
+        return None
+    left, top, right, bottom = rects[inner[0]]
+    return inner[0], bottom - top
 
 
 def right_click_in_window(hwnd: int, x: int, y: int) -> bool:

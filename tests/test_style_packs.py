@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from fl_studio_mcp import style_packs
+from fl_studio_mcp.music.rhythm import parse_grid
 from fl_studio_mcp.style_packs import BUILTIN_DIR, get_pack, list_packs, validate_pack
 from fl_studio_mcp.tools import register_style_tools
 from fl_studio_mcp.utils import connection
@@ -86,7 +87,7 @@ def test_missing_field_is_rejected():
 
 def test_builtin_packs_are_valid_and_named_after_their_files():
     files = sorted(BUILTIN_DIR.glob("*.json"))
-    assert len(files) >= 3
+    assert len(files) >= 5
     for path in files:
         pack = validate_pack(json.loads(path.read_text(encoding="utf-8")))
         assert pack["name"] == path.stem
@@ -102,6 +103,27 @@ def test_no_style_name_appears_in_the_code():
         text = path.read_text(encoding="utf-8").lower()
         found = [n for n in names if re.search(rf"\b{re.escape(n)}\b", text)]
         assert not found, f"{path.name} mentions style(s) {found}"
+
+
+def _steps(grid: str) -> set[int]:
+    hits, length = parse_grid(grid)
+    return {hit.step % 16 for hit in hits} if length else set()
+
+
+@pytest.mark.parametrize("name", ["jumpstyle", "hardjump"])
+def test_offbeat_bass_packs_keep_the_bass_off_the_kick(name):
+    """The bounce comes from bass between the kicks; a shared step would need a sidechain."""
+    pack = get_pack(name)
+    kicks = [r for r in pack["rhythms"] if r["role"] == "kick" and "roll" not in r["name"]]
+    basses = [r for r in pack["rhythms"] if r["role"] == "bass"]
+    assert kicks and basses
+    kick_steps = set().union(*(_steps(r["grid"]) for r in kicks))
+    for bass in basses:
+        assert not _steps(bass["grid"]) & kick_steps, f"{bass['name']} hits with the kick"
+
+
+def test_hardjump_is_faster_than_jumpstyle():
+    assert get_pack("hardjump")["tempo"]["typical"] > get_pack("jumpstyle")["tempo"]["typical"]
 
 
 @pytest.fixture

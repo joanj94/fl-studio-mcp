@@ -354,7 +354,8 @@ def fake_fl(monkeypatch, settings_dir):
     return fl
 
 
-TARGET = {"kind": "mixer track", "index": 5, "owner": "Pad", "value": 0.9, "parameter": "volume"}
+TARGET = {"kind": "mixer track", "index": 5, "owner": "Pad", "value": 0.9, "parameter": "volume",
+          "expected": "Pad - Volume"}
 POINTS = [Point(0, 0.0), Point(26, 0.95), Point(494, 0.87)]
 
 
@@ -570,3 +571,41 @@ def test_find_saved_project_skips_backups(tmp_path):
 
     assert find_saved_project(tmp_path, "Song") == own
     assert find_saved_project(tmp_path, "Other") is None
+
+
+def test_an_effects_parameter_is_a_target(monkeypatch):
+    answers = {"mixer.getTrackInfo": {"name": "Insert 10"},
+               "plugins.getParamValue": {"value": 0.5, "name": "Band 1 level"}}
+    monkeypatch.setattr(automation, "call", lambda action, params=None: answers[action])
+    monkeypatch.setattr(automation, "param_by_name",
+                        lambda conn, plugin, slot, param: (0, "Band 1 level"))
+
+    target = automation._target(10, None, "band 1 level", slot=0)
+
+    assert target == {"kind": "effect", "index": 10, "slot": 0, "param_index": 0,
+                      "owner": "Insert 10", "value": 0.5, "parameter": "Band 1 level",
+                      "expected": "Insert 10 - Band 1 level"}
+    with pytest.raises(ValueError, match="slot"):
+        automation._target(10, None, "cutoff")
+
+
+def test_a_channels_plugin_parameter_is_touched_through_the_plugin(monkeypatch):
+    calls = []
+    answers = {"channels.getInfo": {"name": "Lead"},
+               "plugins.getParamValue": {"value": 0.3, "name": "Cutoff"}}
+
+    def call(action, params=None):
+        calls.append((action, params))
+        return answers.get(action, {})
+
+    monkeypatch.setattr(automation, "call", call)
+    monkeypatch.setattr(automation, "param_by_name",
+                        lambda conn, plugin, slot, param: (7, "Cutoff"))
+
+    target = automation._target(None, 4, "cutoff")
+    automation._touch(target)
+
+    assert target["expected"] == "Lead - Cutoff" and target["slot"] == -1
+    key = {"plugin_index": 4, "slot_index": -1, "param_index": 7}
+    assert calls[-2:] == [("plugins.setParamValue", {**key, "value": pytest.approx(0.31)}),
+                          ("plugins.setParamValue", {**key, "value": 0.3})]
