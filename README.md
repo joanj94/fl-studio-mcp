@@ -46,7 +46,7 @@ This is a fork of [karl-andres/fl-studio-mcp](https://github.com/karl-andres/fl-
 | **Automation** | Creates automation clips for volume, pan or *any* plugin parameter, with the points you give it. It can also read the automation and clips stored in a saved project. |
 | **Mixing** | Sets levels in dB and parameters by their display value ("-6 dB", "2.5 kHz"). Applies named moves ("remove_mud", "glue", "dotted_echo") and builds whole effect chains. Mutes or solos groups of tracks by name, routes tracks to buses, and keeps mix snapshots to restore later. |
 | **Listening** | Renders to WAV or MP3 through FL's own export dialog, then measures the result: loudness (ITU-R BS.1770 LUFS), peaks, frequency balance, stereo image, key and tempo. It renders per-channel stems, reports mix problems, gain-stages the tracks, masters the song to a loudness target with a limiter, matches its EQ to a reference track, reads the live meters, compares the mix with a reference track, and measures a channel's pitch to tune it. |
-| **Audio in** | Turns a recorded melody into notes, finds the tempo of an audio file, and slices samples or vocals at their onsets into WAVs ready to load. Sung vocals can be rendered from notes plus lyrics through a local [OpenUtau](https://www.openutau.com/) engine. |
+| **Audio in** | Splits a mixed song into vocals, drums, bass and the rest (Demucs, on your NVIDIA GPU when there is one), turns a recorded melody into notes, finds the tempo of an audio file, and slices samples or vocals at their onsets into WAVs ready to load. Sung vocals can be rendered from notes plus lyrics through a local [OpenUtau](https://www.openutau.com/) engine. |
 | **FL's own tools** | With FL started by `fl_launch`: FL 2026's built-in assistant tools (48 of them) are used for channels, effects and the piano roll, and can be called directly. Any function of FL's scripting API can be called as well. |
 | **Seeing** | Takes screenshots of FL's window or of one panel (playlist, piano roll, mixer, ...), taken in the background. |
 
@@ -59,6 +59,7 @@ The scripting API of FL Studio can't load plugins, place clips, create automatio
 | Transport, mixer, channels, plugins, patterns, steps | ✅ | ✅ |
 | Piano roll notes | ✅ background | ✅ FL comes to the front briefly |
 | Music toolkit, style packs, MIDI export, audio analysis | ✅ | ✅ |
+| Stem separation | ✅ NVIDIA GPU or CPU | ✅ Apple GPU or CPU |
 | Browser loading, effects, channel deletion | ✅ | ❌ start from a template project |
 | Playlist arrangement, clips, automation, render, screenshots, save | ✅ | ❌ |
 
@@ -115,6 +116,35 @@ Any MCP client that speaks stdio works. Point it at:
 | Audio measurement (`fl_render`, `audio_analyze`, stems, mix check) | numpy: `uv sync --extra analysis` (included with the dev tools) |
 | Reading MP3 / FLAC / OGG files | [ffmpeg](https://ffmpeg.org/) on PATH, or `FL_MCP_FFMPEG` |
 | Sung vocals (`vocal_render`) | an `ourender` build of OpenUtau's engine plus a singer, on PATH or `FL_MCP_OURENDER` |
+| Stem separation (`audio_separate_stems`) | Demucs and torch: `.\install.ps1 -Stems auto` / `./install.sh --stems`, see [Stem separation](#stem-separation) |
+
+### Stem separation
+
+`audio_separate_stems` splits a mixed song (WAV, MP3, FLAC, ...) into **vocals, drums, bass and other** with [Demucs](https://github.com/adefossez/demucs) (`htdemucs_6s` adds guitar and piano). The stems land as WAVs in the browser folder *Project bones/FL-MCP stems/&lt;song&gt;*, ready to load into a channel. Use it for an acapella to sample, a drum break, a bassline to transcribe, or to study a reference track part by part.
+
+**Install** (pick one; about 2.5 GB with CUDA, 300 MB for the CPU build):
+
+```powershell
+.\install.ps1 -Stems auto      # Windows: GPU build if nvidia-smi is found, else CPU
+./install.sh --stems            # macOS / Linux: the same
+```
+
+Or by hand: `uv sync --python 3.12 --extra stems-gpu` (NVIDIA GPU, CUDA 12.6 build of torch) or `uv sync --python 3.12 --extra stems` (CPU only). The two extras can't be combined. A plain `uv sync` (or the installer without the option) removes them again, so repeat the option when you update. Restart your MCP client afterwards.
+
+**CPU or GPU** is chosen on every run (`device="auto"`, the default):
+
+1. An NVIDIA GPU, if torch was built with CUDA and the card passes a small test run. A torch build that lacks the card's kernels reports CUDA but then fails, so it is tested rather than trusted.
+2. Apple's GPU (MPS) on Apple Silicon Macs.
+3. Otherwise the CPU.
+
+A GPU that runs out of memory falls back to the CPU on its own. Force a device with `device="cuda"`, `"mps"` or `"cpu"`. `audio_stem_devices` tells you which device would be used and why, without separating anything.
+
+| | 3.6-minute song, `htdemucs` |
+|--|--|
+| GPU (GTX 1080 Ti) | 6.7 s |
+| CPU | 73 s |
+
+The first run of each model downloads it (about 80 MB, cached by Hugging Face). Options: `two_stems="vocals"` writes only *vocals* and *no_vocals*. `model="htdemucs_ft"` is a little cleaner and four times slower. `shifts=2..10` averages several runs, which is cleaner and slower. Stems are what the model hears: some bleed between them is normal, and a stem whose `level_db` is around -45 dB or lower is close to empty (an instrumental's vocals).
 
 ## Manual installation
 
@@ -171,7 +201,7 @@ Set these in the server entry's `env` block if you need them.
 | `FL_MCP_OURENDER` | The `ourender` program for sung vocals. |
 | `FL_MCP_FL_EXE` | FL Studio's program for `fl_launch`, if the installer's registry entry isn't right. |
 | `FL_MCP_GOPHER_PORT` | The debugging port `fl_launch` opens for FL's own assistant (default 9222). |
-| `FL_MCP_PROFILE` | Offer only some tool groups, for clients that struggle with many tools: `minimal` (73 tools), `compose` (120), `mix` (125), `analysis` (35), or several joined by commas (`compose,mix`). Default `all` (172). `fl_batch` (several tool calls in one) is always there. |
+| `FL_MCP_PROFILE` | Offer only some tool groups, for clients that struggle with many tools: `minimal` (73 tools), `compose` (122), `mix` (128), `analysis` (37), or several joined by commas (`compose,mix`). Default `all` (174). `fl_batch` (several tool calls in one) is always there. |
 
 ## Using it
 
@@ -194,6 +224,7 @@ On Windows the AI can load sounds from FL's browser by itself. To let it use you
 "Render the stems, tell me what clashes, gain-stage the mix and export the song as song.mp3."
 "Take a snapshot called 'before master', try a louder master, and restore it if it clips."
 "Here is my vocal recording: extract the melody and double it with the lead."
+"Pull the acapella out of reference.mp3 and load it into a new channel."
 ```
 
 ### Style packs
@@ -223,7 +254,7 @@ Pitch names are scientific: **C4 = MIDI 60**. FL's piano roll labels the same no
 
 ## Tool reference
 
-The server has 172 tools in total (set `FL_MCP_PROFILE` to offer fewer). Expand a group to see its tools. Tools marked **(W)** are Windows only.
+The server has 174 tools in total (set `FL_MCP_PROFILE` to offer fewer). Expand a group to see its tools. Tools marked **(W)** are Windows only.
 
 <details>
 <summary><b>FL's own assistant and raw API</b> (6)</summary>
@@ -387,7 +418,7 @@ Plugins are addressed by channel (index or role), or by mixer track and slot.
 </details>
 
 <details>
-<summary><b>Render and audio analysis</b> (8)</summary>
+<summary><b>Render and audio analysis</b> (10)</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -401,6 +432,8 @@ Plugins are addressed by channel (index or role), or by mixer track and slot.
 | `audio_match_eq` | EQ moves (frequency, gain, peaking or shelf) toward a reference track's tonal balance |
 | `fl_match_eq` | Render the song, propose those moves, and with `apply=true` set them on a Parametric EQ 2 (master by default) **(W)** |
 | `audio_extract_melody` | A recorded single-voice melody turned into notes |
+| `audio_separate_stems` | Split a song into vocals, drums, bass and other (or 6 stems) with Demucs, GPU when available, as WAVs the browser can load ([setup](#stem-separation)) |
+| `audio_stem_devices` | Which device (CUDA GPU, Apple GPU or CPU) stem separation would use, and why |
 | `vocal_render` / `vocal_list_singers` | Sing notes with lyrics through OpenUtau's engine, as a WAV the browser can load |
 
 </details>
@@ -532,7 +565,7 @@ fl-studio-mcp/
 - [karl-andres/fl-studio-mcp](https://github.com/karl-andres/fl-studio-mcp): the upstream project this fork is based on
 - [calvinw/fl-studio-mcp](https://github.com/calvinw/fl-studio-mcp): the piano roll integration approach
 - [rosasynthesiz/flstudio-mcp](https://github.com/rosasynthesiz/flstudio-mcp): ideas for mix diagnosis, snapshots and MIDI export
-- [FL Studio API Stubs](https://github.com/IL-Group/FL-Studio-API-Stubs), [FastMCP](https://github.com/jlowin/fastmcp), [mido](https://github.com/mido/mido), [OpenUtau](https://github.com/stakira/OpenUtau)
+- [FL Studio API Stubs](https://github.com/IL-Group/FL-Studio-API-Stubs), [FastMCP](https://github.com/jlowin/fastmcp), [mido](https://github.com/mido/mido), [OpenUtau](https://github.com/stakira/OpenUtau), [Demucs](https://github.com/adefossez/demucs) (stem separation)
 - [Image-Line](https://www.image-line.com/), for FL Studio
 
 Not affiliated with Image-Line.
