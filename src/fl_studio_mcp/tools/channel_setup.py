@@ -11,8 +11,13 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from fl_studio_mcp.tools.browser import open_in_new_channel, run_load
-from fl_studio_mcp.utils import fl_channel_rack
+from fl_studio_mcp.tools.browser import (
+    add_channel_natively,
+    open_in_new_channel,
+    run_load,
+    run_load_natively,
+)
+from fl_studio_mcp.utils import fl_assistant, fl_channel_rack
 from fl_studio_mcp.utils.connection import call
 from fl_studio_mcp.utils.fl_channel_rack import ChannelRackError
 from fl_studio_mcp.utils.fl_trigger import keyboard_lock
@@ -25,6 +30,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 GENERATORS_FOLDER = "Plugin database/Generators"
+
+
+def _delete_natively(indexes: list[int]) -> int | None:
+    """Delete with FL's own remove_channels; None when that can't be used (nothing changed).
+
+    Raises ChannelRackError when FL removed other channels than asked.
+    """
+    if not fl_assistant.available():
+        return None
+    try:
+        return fl_assistant.delete_channels(indexes)
+    except fl_assistant.UnexpectedChange as e:
+        raise ChannelRackError(str(e)) from e
+    except fl_assistant.AssistantError as e:
+        logger.info("FL's own tools failed (%s); using the channel rack's menu", e)
+        return None
 
 
 def register_channel_setup_tools(mcp: FastMCP) -> None:
@@ -68,12 +89,17 @@ def register_channel_setup_tools(mcp: FastMCP) -> None:
             category = list_generators()[generator]
         except ValueError as e:
             return {"error": str(e)}
-        added = run_load(open_in_new_channel, f"{GENERATORS_FOLDER}/{category}/{generator}", name)
+        added = run_load_natively(
+            lambda: run_load(add_channel_natively, generator, name),
+            lambda: run_load(open_in_new_channel, f"{GENERATORS_FOLDER}/{category}/{generator}",
+                             name),
+        )
         if "error" in added:
             return added
         result = {"index": added["index"], "name": added["name"], "plugin": generator}
-        if "warning" in added:
-            result["warning"] = added["warning"]
+        for key in ("warning", "via"):
+            if key in added:
+                result[key] = added[key]
         return result
 
     @mcp.tool()
@@ -104,7 +130,9 @@ def register_channel_setup_tools(mcp: FastMCP) -> None:
                     return {"error": f"No channel at index {unknown[0]}"}
                 if len(indexes) == len(names):
                     return {"error": "FL Studio keeps at least one channel: leave one out"}
-                remaining = fl_channel_rack.delete_channels(indexes)
+                remaining = _delete_natively(indexes)
+                if remaining is None:
+                    remaining = fl_channel_rack.delete_channels(indexes)
         except (ValueError, ChannelRackError) as e:
             return {"error": str(e)}
         except Exception as e:

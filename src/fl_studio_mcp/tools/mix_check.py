@@ -10,13 +10,18 @@ sets, a level per mixer track from the stems' peaks. The meter tools read
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from fl_studio_mcp.audio.loudness_target import next_gain
 from fl_studio_mcp.audio.mix_doctor import diagnose, gain_plan
 from fl_studio_mcp.tools import audio as audio_tools
-from fl_studio_mcp.utils.connection import call
+from fl_studio_mcp.tools.mixing import FLAT_DB, LEVEL_TYPES, _bands, find_or_add_plugin
+from fl_studio_mcp.tools.plugins import param_by_name, set_param_by_value
+from fl_studio_mcp.utils.connection import call, get_connection
 from fl_studio_mcp.utils.fl_render import RenderError
 from fl_studio_mcp.utils.fl_trigger import keyboard_lock
+from fl_studio_mcp.utils.param_values import parse_display
 from fl_studio_mcp.utils.peak_watch import (
     DEFAULT_INTERVAL,
     DEFAULT_OVER_DBFS,
@@ -30,6 +35,10 @@ if TYPE_CHECKING:
     from fastmcp import FastMCP
 
 MAX_LEVEL_SECONDS = 10.0
+MASTER = 0
+LIMITER = "Fruity Limiter"
+MAX_MASTER_RENDERS = 8
+MAX_LIMITER_GAIN_DB = 18.0  # seen live: Fruity Limiter's Gain shows -INF to 18.1 dB
 watch = PeakWatch(call)
 
 
@@ -59,6 +68,103 @@ def _tracks_to_watch(tracks: list[int] | None) -> tuple[list[int], dict[int, str
         raise ValueError(listed["error"])
     names = {t["index"]: t["name"] for t in listed.get("tracks", [])}
     return (sorted(names) if tracks is None else list(tracks)), names
+
+
+def _limiter_gain(conn, slot: int) -> tuple[int, float]:
+    """(Gain parameter's index, the dB it shows) of the master's limiter."""
+    index, _ = param_by_name(conn, MASTER, slot, "Gain")
+    shown = conn.send_command("plugins.getParamValue", {
+        "param_index": index, "plugin_index": MASTER, "slot_index": slot})
+    parsed = parse_display(str(shown.get("value_string", "")))
+    if not shown.get("success", False) or parsed is None:
+        raise ValueError("The limiter's gain could not be read")
+    return index, parsed[1]
+
+
+def master_to_loudness(target_lufs: float, ceiling_db: float, tolerance: float,
+                       max_renders: int, timeout: float) -> dict:
+    """Set the master limiter's ceiling, then its gain render by render. Raises ValueError."""
+    conn = get_connection()
+    slot, added = find_or_add_plugin(MASTER, LIMITER)
+    ceiling = set_param_by_value(conn, MASTER, slot, param_by_name(
+        conn, MASTER, slot, "Limiter ceiling")[0], f"{ceiling_db:g}dB")["shows"]
+    gain_index, gain = _limiter_gain(conn, slot)
+    try:
+        return _limit_to_target(conn, slot, gain_index, gain, target_lufs, tolerance,
+                                max_renders, timeout) | {"slot": slot, "added": added,
+                                                         "ceiling": ceiling}
+    except (RenderError, ValueError) as e:
+        state = f"the limiter in the master's slot {slot}" + (" (added by this run)"
+                                                              if added else "")
+        raise ValueError(
+            f"{e} ({state} keeps its last gain; fl_get_plugin_params shows it)") from e
+
+
+def _limit_to_target(conn, slot: int, gain_index: int, gain: float, target_lufs: float,
+                     tolerance: float, max_renders: int, timeout: float) -> dict:
+    history: list[tuple[float, float]] = []
+    renders = []
+    while True:
+        mix = _render_mix(timeout)
+        if "error" in mix:
+            raise ValueError(mix["error"])
+        lufs = mix.get("loudness_lufs")
+        if lufs is None:
+            raise ValueError("The render is silent: nothing plays in song mode")
+        history.append((gain, lufs))
+        renders.append({"gain_db": gain, "loudness_lufs": lufs, "peak_dbfs": mix["peak_dbfs"]})
+        if abs(lufs - target_lufs) <= tolerance or len(renders) >= max_renders:
+            break
+        wanted = min(MAX_LIMITER_GAIN_DB, next_gain(history, target_lufs))
+        if wanted <= gain + 0.05 and gain >= MAX_LIMITER_GAIN_DB - 0.05:
+            break  # the gain is at its top already
+        shows = set_param_by_value(conn, MASTER, slot, gain_index, f"{wanted:g}dB")["shows"]
+        parsed = parse_display(shows)
+        gain = parsed[1] if parsed else wanted
+    reached = abs(renders[-1]["loudness_lufs"] - target_lufs) <= tolerance
+    result = {"reached": reached, "renders": renders}
+    at_top = gain >= MAX_LIMITER_GAIN_DB - 0.5
+    if not reached and renders[-1]["loudness_lufs"] < target_lufs and at_top:
+        result["note"] = (f"The limiter's gain is at its top (+{MAX_LIMITER_GAIN_DB:g} dB): "
+                          "raise the mixer tracks going into the master, then run this again.")
+    return result
+
+
+EQ = "Fruity Parametric EQ 2"
+EQ_WIDTH = "40%"  # about an octave, like the EQ intents
+
+
+def _render_to_file(timeout: float) -> Path:
+    path = audio_tools._new_render_path("match")
+    audio_tools.render_audio(path, timeout)
+    return path
+
+
+def set_eq_bands(track: int, bands: list[dict]) -> dict:
+    """Put EQ bands ({"hz", "gain_db", "type"}) on free bands of the track's Parametric EQ 2.
+
+    A free band is one that only changes a level and sits at 0 dB. Raises ValueError.
+    """
+    conn = get_connection()
+    slot, added = find_or_add_plugin(track, EQ)
+    free = [band for band, state in sorted(_bands(conn, track, slot).items())
+            if state.get("type", "").lower() in LEVEL_TYPES
+            and abs((parse_display(state.get("level", "")) or ("", 99.0))[1]) < FLAT_DB]
+    if len(free) < len(bands):
+        raise ValueError(f"The EQ in slot {slot} has {len(free)} free bands, "
+                         f"{len(bands)} are needed: clear some or ask for fewer")
+    applied = []
+    for band, move in zip(free, bands):
+        values = {"type": move["type"], "freq": f"{move['hz']}Hz",
+                  "level": f"{move['gain_db']:g}dB"}
+        if move["type"] == "Peaking":
+            values["width"] = EQ_WIDTH
+        shown = {}
+        for what, value in values.items():
+            index, _ = param_by_name(conn, track, slot, f"Band {band} {what}")
+            shown[what] = set_param_by_value(conn, track, slot, index, value)["shows"]
+        applied.append({"band": band, **shown})
+    return {"track": track, "slot": slot, "added": added, "set": applied}
 
 
 def register_mix_check_tools(mcp: FastMCP) -> None:
@@ -164,6 +270,97 @@ def register_mix_check_tools(mcp: FastMCP) -> None:
         result = {"tracks": plan, "applied": apply and not failed}
         if failed:
             result["error"] = "Some faders could not be set: " + "; ".join(failed)
+        return result
+
+    @mcp.tool()
+    def fl_master_to_loudness(
+        target_lufs: float = -14.0,
+        ceiling_db: float = -1.0,
+        tolerance: float = 0.5,
+        max_renders: int = 5,
+        timeout: float = audio_tools.DEFAULT_RENDER_TIMEOUT,
+    ) -> dict:
+        """Bring the whole song to a loudness (integrated LUFS) with a limiter on the master.
+
+        Uses the master's Fruity Limiter (adds one at the end of the chain if it
+        has none), sets its ceiling, then renders and adjusts the limiter's gain
+        until the song measures within `tolerance` of the target. The more gain,
+        the harder the limiter works: compare the renders' peak and the crest
+        factor of fl_render to judge what it costs. Renders what FL plays (song
+        mode for the whole song). Takes 2-5 renders. Windows only.
+
+        Args:
+            target_lufs: Integrated loudness to reach (-14 is a common streaming
+                level, louder club masters sit around -9 to -6).
+            ceiling_db: The limiter's ceiling (the highest peak), -12 to 0.
+            tolerance: How close the loudness must come, in LU.
+            max_renders: Renders to try at most (1-8).
+            timeout: Seconds to wait for each render.
+
+        Returns {"slot", "added", "ceiling", "reached", "renders": [{"gain_db",
+        "loudness_lufs", "peak_dbfs"}]} or {"error"}.
+        """
+        if not -40 <= target_lufs <= 0:
+            return {"error": f"target_lufs must be -40 to 0, got {target_lufs}"}
+        if not -12 <= ceiling_db <= 0:
+            return {"error": f"ceiling_db must be -12 to 0, got {ceiling_db}"}
+        if isinstance(max_renders, bool) or not 1 <= max_renders <= MAX_MASTER_RENDERS:
+            return {"error": f"max_renders must be 1-{MAX_MASTER_RENDERS}, got {max_renders!r}"}
+        if not 0.1 <= tolerance <= 3:
+            return {"error": f"tolerance must be 0.1-3 LU, got {tolerance}"}
+        try:
+            with keyboard_lock:
+                return master_to_loudness(target_lufs, ceiling_db, tolerance, max_renders,
+                                          timeout)
+        except (RenderError, ValueError, RuntimeError) as e:
+            return {"error": str(e)}
+
+    @mcp.tool()
+    def fl_match_eq(
+        reference: str,
+        apply: bool = False,
+        track: int = MASTER,
+        max_bands: int = 4,
+        strength: float = 0.7,
+        timeout: float = audio_tools.DEFAULT_RENDER_TIMEOUT,
+    ) -> dict:
+        """Render the song and propose EQ moves toward a reference track's tonal balance.
+
+        Like audio_match_eq on a fresh render of what FL plays (song mode for the
+        whole song). With apply=true the moves go onto free bands of a Fruity
+        Parametric EQ 2 on `track` (one is added if the track has none); the
+        master by default. Render and compare again to check, and judge by ear:
+        a reference is another song. Windows only.
+
+        Args:
+            reference: The audio file to match (any format audio_analyze reads).
+            apply: Set the EQ; default: only propose.
+            track: Mixer track for the EQ (0 = master).
+            max_bands: EQ bands at most (1-7).
+            strength: Share of each difference to correct (0-1].
+            timeout: Seconds to wait for the render.
+
+        Returns {"bands", "curve", "applied"?: {"track", "slot", "added", "set"}}
+        or {"error"}.
+        """
+        try:
+            from fl_studio_mcp.audio.eq_match import file_spectrum, match_eq
+        except ImportError:
+            return {"error": audio_tools.MISSING_NUMPY}
+        try:
+            wanted = file_spectrum(Path(reference))
+            with keyboard_lock:
+                path = _render_to_file(timeout)
+                try:
+                    result = match_eq(file_spectrum(path), wanted, max_bands, strength)
+                finally:
+                    path.unlink(missing_ok=True)
+                if apply and result["bands"]:
+                    result["applied"] = set_eq_bands(track, result["bands"])
+        except MemoryError:
+            return {"error": "Not enough memory to compare files this long"}
+        except (RenderError, ValueError, RuntimeError, OSError) as e:
+            return {"error": str(e)}
         return result
 
     @mcp.tool()

@@ -40,13 +40,14 @@ This is a fork of [karl-andres/fl-studio-mcp](https://github.com/karl-andres/fl-
 
 | Area | Highlights |
 |------|-----------|
-| **Composing** | Notes, chords and drum steps in any channel and pattern, with every note property (slide, porta, pan, fine pitch, velocity, filter). There is also a pure-Python music toolkit: scales, chord symbols, roman numerals, scale-degree melodies, step grids, Euclidean rhythms, rolls, and transforms (arpeggiate, swing, humanize, quantize, ...). |
-| **Sounds** | Searches FL's browser by name, loads samples, presets and instrument plugins into new or existing channels, adds and deletes mixer effects, and deletes channels. |
+| **Composing** | Piano roll markers (key/scale, time signature, pattern length) and the project's time signature. Notes, chords and drum steps in any channel and pattern, with every note property (slide, porta, pan, fine pitch, velocity, filter). There is also a pure-Python music toolkit: scales, chord symbols, roman numerals, smooth voice leading, basslines from chords, MIDI file import, scale-degree melodies, step grids, Euclidean rhythms, rolls, and transforms (arpeggiate, strum, flam, chop, accents, velocity curves, swing, humanize, quantize, fix overlaps, groove templates, ...). |
+| **Sounds** | Searches FL's browser by name, or by the tempo and key written in sample names ("128bpm", "F#m"), loads samples, presets and instrument plugins into new or existing channels, adds and deletes mixer effects, and deletes channels. |
 | **Arranging** | Lays the song out in the playlist (one track per pattern, section by section), adds or deletes single clips, adds time markers, clones patterns, and exports MIDI. |
 | **Automation** | Creates automation clips for volume, pan or *any* plugin parameter, with the points you give it. It can also read the automation and clips stored in a saved project. |
 | **Mixing** | Sets levels in dB and parameters by their display value ("-6 dB", "2.5 kHz"). Applies named moves ("remove_mud", "glue", "dotted_echo") and builds whole effect chains. Mutes or solos groups of tracks by name, routes tracks to buses, and keeps mix snapshots to restore later. |
-| **Listening** | Renders to WAV or MP3 through FL's own export dialog, then measures the result: loudness (ITU-R BS.1770 LUFS), peaks, frequency balance, stereo image, key and tempo. It renders per-channel stems, reports mix problems, gain-stages the tracks, reads the live meters, compares the mix with a reference track, and measures a channel's pitch to tune it. |
-| **Audio in** | Turns a recorded melody into notes and finds the tempo of an audio file. Sung vocals can be rendered from notes plus lyrics through a local [OpenUtau](https://www.openutau.com/) engine. |
+| **Listening** | Renders to WAV or MP3 through FL's own export dialog, then measures the result: loudness (ITU-R BS.1770 LUFS), peaks, frequency balance, stereo image, key and tempo. It renders per-channel stems, reports mix problems, gain-stages the tracks, masters the song to a loudness target with a limiter, matches its EQ to a reference track, reads the live meters, compares the mix with a reference track, and measures a channel's pitch to tune it. |
+| **Audio in** | Turns a recorded melody into notes, finds the tempo of an audio file, and slices samples or vocals at their onsets into WAVs ready to load. Sung vocals can be rendered from notes plus lyrics through a local [OpenUtau](https://www.openutau.com/) engine. |
+| **FL's own tools** | With FL started by `fl_launch`: FL 2026's built-in assistant tools (48 of them) are used for channels, effects and the piano roll, and can be called directly. Any function of FL's scripting API can be called as well. |
 | **Seeing** | Takes screenshots of FL's window or of one panel (playlist, piano roll, mixer, ...), taken in the background. |
 
 The scripting API of FL Studio can't load plugins, place clips, create automation or delete effects. On Windows this server does those things anyway: it drives FL's own browser and menus with **posted window messages**. It never takes your mouse, keyboard or focus. Each step is checked (the expected menu, dialog or result must appear) before the next one runs.
@@ -89,6 +90,8 @@ The installer installs the dependencies and walks you through creating the MIDI 
 1. Restart FL Studio.
 2. Open **Options > MIDI Settings**. Under **Input**, select your virtual port, set **Controller type** to **FL Studio MCP Controller** and make sure it is enabled. Leave **Output** alone.
 3. Ask your AI: *"Give me an overview of the open FL Studio project."*
+
+**Recommended (FL Studio 2026, Windows):** let the AI start FL with `fl_launch` instead of starting it yourself. FL then runs with its own built-in assistant tools reachable, and channels, effects and piano roll notes go through those: no menu walks, and notes about ten times faster. Everything still works without it, through FL's menus.
 
 ### Other MCP clients
 
@@ -166,6 +169,9 @@ Set these in the server entry's `env` block if you need them.
 | `FL_MCP_STYLES_DIR` | A folder of your own style packs (`*.json`). A pack with a built-in pack's name replaces it. |
 | `FL_MCP_FFMPEG` | The ffmpeg program, if it isn't on PATH. |
 | `FL_MCP_OURENDER` | The `ourender` program for sung vocals. |
+| `FL_MCP_FL_EXE` | FL Studio's program for `fl_launch`, if the installer's registry entry isn't right. |
+| `FL_MCP_GOPHER_PORT` | The debugging port `fl_launch` opens for FL's own assistant (default 9222). |
+| `FL_MCP_PROFILE` | Offer only some tool groups, for clients that struggle with many tools: `minimal` (73 tools), `compose` (120), `mix` (125), `analysis` (35), or several joined by commas (`compose,mix`). Default `all` (172). `fl_batch` (several tool calls in one) is always there. |
 
 ## Using it
 
@@ -217,7 +223,41 @@ Pitch names are scientific: **C4 = MIDI 60**. FL's piano roll labels the same no
 
 ## Tool reference
 
-The server has 138 tools in total. Expand a group to see its tools. Tools marked **(W)** are Windows only.
+The server has 172 tools in total (set `FL_MCP_PROFILE` to offer fewer). Expand a group to see its tools. Tools marked **(W)** are Windows only.
+
+<details>
+<summary><b>FL's own assistant and raw API</b> (6)</summary>
+
+| Tool | Description |
+|------|-------------|
+| `fl_launch` | Start FL Studio with its own assistant tools reachable (recommended on FL 2026) **(W)** |
+| `fl_assistant_status` / `fl_assistant_call` | List FL's own 48 assistant tools; run one of them |
+| `fl_run_piano_roll_python` | Run Python with the full `flpianoroll` API in a piano roll (selection, groups, ...) |
+| `fl_api_call` / `fl_api_list` | Call any function of FL's MIDI scripting API; list a module's functions and constants |
+
+</details>
+
+<details>
+<summary><b>Markers, time signature, built-in EQ, sections, slicing, presets, MIDI import, chords, drums</b> (19)</summary>
+
+| Tool | Description |
+|------|-------------|
+| `fl_add_piano_roll_marker` / `fl_get_piano_roll_markers` / `fl_clear_piano_roll_markers` | Key/scale, time signature, pattern length and named markers in a pattern's piano roll (needs `fl_launch`) |
+| `fl_set_time_signature` | The project's time signature (3/4, 6/8, 7/8, ...) |
+| `fl_redo` / `fl_get_undo_history` | Redo after `fl_undo`; position in the undo history and unsaved changes |
+| `fl_get_track_eq` / `fl_set_track_eq` | The mixer's built-in 3-band EQ in dB and Hz, no plugin needed |
+| `fl_set_playlist_selection` / `fl_get_playlist_selection` | A time selection over some bars (loop one section); `fl_render(start_bar, end_bar)` renders just those bars |
+| `audio_masking` | Where two stems compete for the same frequencies |
+| `audio_slice` | Cut a sample or vocal at its onsets into WAVs in the browser |
+| `fl_select_preset` | Switch a plugin to one of its own presets by name |
+| `fl_get_drum_pads` | An FPC's pads and the note each plays |
+| `fl_set_pattern_color` | Colour a pattern (its playlist clips follow) |
+| `music_import_midi` | Read a .mid file into notes ready for `fl_send_notes`, one list per part |
+| `music_bassline` | A bassline under chords: a step grid on the roots, fifths or octaves |
+| `audio_chords` | The chords of a recording bar by bar (a reference's progression to write against) |
+| `audio_drums` | A clean drum loop as kick/snare/hat hits, grids and a groove template (`music_transform` op `groove`) |
+
+</details>
 
 <details>
 <summary><b>Project, patterns and roles</b> (14)</summary>
@@ -268,7 +308,7 @@ Notes can carry `velocity`, `release`, `pan`, `fcut`, `fres` (0-1), `slide`, `po
 | `fl_mute_channel` / `fl_solo_channel` | Mute or solo |
 | `fl_route_channel_to_mixer` | Send a channel to a mixer track |
 | `fl_show_channel_editor` | Show or hide a channel's plugin window |
-| `fl_browser_search` | Find samples and presets by name across the browser's folders, in under a second |
+| `fl_browser_search` | Find samples and presets by name across the browser's folders, in under a second; filter by the tempo or key in their names (`bpm=140`, `key="Am"`, relative keys too) |
 | `fl_browser_list` | List a browser folder (`"Packs/Drums/Kicks"`, `"Plugin database/Generators"`, ...) **(W)** |
 | `fl_browser_refresh` | Make FL read its browser folders from disk again **(W)** |
 | `fl_load_in_new_channel` | A new channel from a sample, preset or plugin **(W)** |
@@ -313,6 +353,8 @@ Plugins are addressed by channel (index or role), or by mixer track and slot.
 | `fl_setup_chain` | Build a chain on a track: `vocal`, `lead`, `pad`, `bass`, `drum_bus`, `master` **(W)** |
 | `fl_diagnose_mix` | Render the mix and every part and list what to check: clipping, headroom, buried parts, masking, low end, routing **(W)** |
 | `fl_gain_stage` | Level every track so each part peaks at the same level **(W)** |
+| `fl_save_chain` / `fl_apply_chain` / `fl_list_chains` | Keep a track's effect chain (plugins, order, every parameter) under a name and put it on any track **(W)** |
+| `fl_master_to_loudness` | Bring the song to a loudness (e.g. -14 LUFS): the master's Fruity Limiter, its ceiling, then its gain render by render **(W)** |
 | `fl_get_track_level` | The meters' highest peak while FL plays |
 | `fl_watch_peaks_start` / `fl_watch_peaks_status` / `fl_watch_peaks_stop` | Watch the meters in the background through a whole playthrough |
 | `fl_take_snapshot` / `fl_restore_snapshot` / `fl_list_snapshots` | Keep the whole mix (levels, routing, effects and their parameters, channels) and restore only what changed |
@@ -354,6 +396,10 @@ Plugins are addressed by channel (index or role), or by mixer track and slot.
 | `fl_measure_pitch` | Play one note on a channel and report its real pitch, plus how to transpose the notes into tune **(W)** |
 | `audio_analyze` | Any audio file: LUFS, peak, RMS, crest factor, clipping, spectrum bands, stereo width, key, tempo, loudness over time |
 | `audio_compare` | Your mix next to a reference track |
+| `audio_loop_tempo` | A loop's exact tempo from its length (a whole number of bars), picked by the number in its name or the tempo heard |
+| `audio_qc` | Technical checks before release: DC offset, true peak (4x oversampled), clicks, dropouts, out-of-phase seconds, mono loss |
+| `audio_match_eq` | EQ moves (frequency, gain, peaking or shelf) toward a reference track's tonal balance |
+| `fl_match_eq` | Render the song, propose those moves, and with `apply=true` set them on a Parametric EQ 2 (master by default) **(W)** |
 | `audio_extract_melody` | A recorded single-voice melody turned into notes |
 | `vocal_render` / `vocal_list_singers` | Sing notes with lyrics through OpenUtau's engine, as a WAV the browser can load |
 
@@ -393,7 +439,8 @@ Plugins are addressed by channel (index or role), or by mixer track and slot.
 1. **Controller commands** (transport, mixer, channels, plugins, patterns). The server writes `{"id", "action", "params"}` to a JSON file and sends a MIDI note over the virtual port. The controller script inside FL calls FL's API and writes a response that echoes the id. Stale or half-written responses are ignored, and only one command is in flight at a time.
 2. **Piano roll.** Requests are queued in a JSON file. On Windows the server runs the `ComposeWithLLM` script from the piano roll's own menu while FL stays in the background; on macOS it sends a keystroke. The script validates the whole batch, applies it, and confirms which requests it processed.
 3. **What the API can't do** (Windows). Loading, clips, automation, effect deletion, render and save are done by posting clicks and keys to FL's own windows and menus. Every step waits for the expected menu, dialog or result before the next one, and many are checked against a fresh read or a picture of the panel.
-4. **Analysis** runs in the server, on files: rendered WAVs (numpy), saved `.flp` projects, and `.fst` presets.
+4. **FL's own assistant** (FL 2026, started with `fl_launch`). FL ships an MCP server of its own behind its Gopher panel. The server reaches it over WebView2's debugging port and uses it to add and delete channels and effects by name, to run piano roll Python (notes, markers) in about 0.05 s, and for FL's other tools. Every change is still checked by reading it back.
+5. **Analysis** runs in the server, on files: rendered WAVs (numpy), saved `.flp` projects, and `.fst` presets.
 
 ## Limitations
 

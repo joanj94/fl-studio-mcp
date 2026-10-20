@@ -59,17 +59,19 @@ def _files(name: str, folder: Path):
 
 
 def search(
-    roots: list[tuple[str, Path]], query: str, folder: str = "", limit: int = DEFAULT_LIMIT
+    roots: list[tuple[str, Path]], query: str, folder: str = "", limit: int = DEFAULT_LIMIT,
+    keep=None,
 ) -> tuple[list[str], int]:
     """Browser paths of loadable files matching `query`, best first, and how many there are.
 
     Every word of the query must be in the path (any case, in any order);
     `folder` limits the search to paths starting with it. Files whose own name
     holds all the words come first, then shorter paths. Raises ValueError for
-    an empty query.
+    an empty query, unless `keep` (a predicate on paths, e.g. sample_tags.matcher)
+    narrows the search instead.
     """
     words = query.lower().split()
-    if not words:
+    if not words and keep is None:
         raise ValueError("Give at least one word to search for")
     prefix = "/".join(part for part in folder.replace("\\", "/").split("/") if part).lower()
     found = set()
@@ -80,7 +82,7 @@ def search(
             lowered = path.lower()
             if prefix and not (lowered + "/").startswith(prefix + "/"):
                 continue
-            if all(word in lowered for word in words):
+            if all(word in lowered for word in words) and (keep is None or keep(path)):
                 found.add(path)
 
     def rank(path: str) -> tuple[bool, int, str]:

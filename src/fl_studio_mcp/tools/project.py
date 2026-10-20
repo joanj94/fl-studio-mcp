@@ -43,3 +43,37 @@ def register_project_tools(mcp: FastMCP) -> None:
         if not MIN_TEMPO <= bpm <= MAX_TEMPO:
             return {"error": f"Tempo must be {MIN_TEMPO}-{MAX_TEMPO} BPM, got {bpm}"}
         return call("project.setTempo", {"bpm": bpm})
+
+    @mcp.tool()
+    def fl_set_time_signature(numerator: int, denominator: int) -> dict:
+        """Set the project's time signature, e.g. 3/4, 6/8, 7/8.
+
+        Bars, the playlist grid and the metronome follow it. A piano roll's own
+        time signature marker (fl_add_piano_roll_marker) overrides it there.
+
+        Args:
+            numerator: Beats per bar, 1-16.
+            denominator: Beat unit: 2, 4, 8 or 16.
+
+        Returns {"numerator", "denominator", "beats_per_bar" (in quarter notes)}
+        or {"error"}.
+        """
+        return call("project.setTimeSignature",
+                    {"numerator": numerator, "denominator": denominator})
+
+    @mcp.tool()
+    def fl_redo(steps: int = 1) -> dict:
+        """Redo what fl_undo took back (FL's Ctrl+Shift+Z, steps 1-50).
+
+        Returns {"redone", "position" ("3/12": third newest of 12)} or {"error"}.
+        """
+        return call("project.redo", {"steps": steps})
+
+    @mcp.tool()
+    def fl_get_undo_history() -> dict:
+        """Where FL stands in its undo history and whether the project has unsaved changes.
+
+        Returns {"position" ("1/12": the newest of 12 steps), "count",
+        "unsaved_changes"}.
+        """
+        return call("project.getUndoHistory")

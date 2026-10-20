@@ -37,6 +37,7 @@ PANEL_CLASS = "TVectorPanel"  # the parts FL draws itself, e.g. the mixer's slot
 EDITOR_PANEL_CLASS = "TEventEditForm"  # the piano roll's and the playlist's window
 # In the playlist: the box above the track headers, left of the time ruler.
 PLAYLIST_CORNER_CLASS = "TWPControl"
+PLAYLIST_SCROLLER_CLASS = "TQuickScroller"  # the scroll bar above the time ruler
 MAIN_MENU_CLASS = "TNewMenu"  # the FILE EDIT ADD ... bar
 # A point inside "FILE", the bar's first entry (pixels from the bar's top-left corner).
 FILE_MENU_OFFSET = (12, 16)
@@ -347,6 +348,8 @@ class PlaylistPanel:
     grid_left: int  # ...and end where the clip area starts
     grid_top: int
     grid_bottom: int
+    # Where the time ruler starts (the scroll bar's bottom); None if it wasn't found.
+    ruler_top: int | None = None
 
 
 def playlist_panel() -> PlaylistPanel | None:
@@ -367,12 +370,20 @@ def playlist_panel() -> PlaylistPanel | None:
             return None
         left, top, _right, bottom = _rect(user32, hwnd)
         corner = _rect(user32, corners[0])
+        # Seen live: the scroll bar over the clip area is a child window too; the ruler
+        # lies between it and the clip area, its height changing with the layout.
+        scrollers = [
+            _rect(user32, s) for s in _visible_children(user32, hwnd, PLAYLIST_SCROLLER_CLASS)
+        ]
+        above = [r[3] - top for r in scrollers
+                 if r[0] >= corner[2] - 4 and corner[1] <= r[3] <= corner[3]]
         return PlaylistPanel(
             hwnd=hwnd,
             header_left=corner[0] - left,
             grid_left=corner[2] - left,
             grid_top=corner[3] - top,
             grid_bottom=bottom - top - PLAYLIST_BOTTOM_MARGIN,
+            ruler_top=max(above) if above else None,
         )
     return None
 

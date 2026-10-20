@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 from fl_studio_mcp.utils.param_values import find_value
 from fl_studio_mcp.utils.roles import resolve_channel
 
+PRESET_SETTLE_SECONDS = 1.0
+
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
@@ -390,6 +392,60 @@ def register_plugin_tools(mcp: FastMCP) -> None:
         if not result.get("success", False) and "error" in result:
             return {"error": result["error"]}
         return {"count": result.get("count", 0), "presets": result.get("presets", [])}
+
+    @mcp.tool()
+    def fl_select_preset(index: int | str, name: str, slot_index: int = -1) -> dict:
+        """Switch a plugin to one of its own presets by name (fl_list_presets lists them).
+
+        An exact name wins, else a part of a name that only one preset has
+        ("behemoth"). Checked by reading the current preset back.
+
+        Args:
+            index: Channel index (global) or role, or mixer track index.
+            name: The preset's name or a unique part of it (case ignored).
+            slot_index: Effect slot for a mixer effect (-1 for a channel's plugin).
+
+        Returns {"index", "preset", "steps"} or {"error": ...}.
+        """
+        try:
+            index = _plugin_index(index, slot_index)
+        except ValueError as e:
+            return {"error": str(e)}
+        import time
+
+        from fl_studio_mcp.utils.connection import call
+
+        selected = call("plugins.selectPreset",
+                        {"index": index, "name": name, "slot_index": slot_index})
+        if "error" in selected:
+            return selected
+        # Seen live: the current preset only reads back after the stepping command.
+        deadline = time.monotonic() + PRESET_SETTLE_SECONDS
+        while True:
+            now = call("plugins.getCurrentPreset", {"index": index, "slot_index": slot_index})
+            if "error" in now or now.get("preset") == selected["preset"]:
+                break
+            if time.monotonic() >= deadline:
+                return {"error": f"The plugin is on {now.get('preset')!r} after stepping to "
+                                 f"{selected['preset']!r}"}
+            time.sleep(0.05)
+        return {**selected, **({"error": now["error"]} if "error" in now else {})}
+
+    @mcp.tool()
+    def fl_get_drum_pads(channel: int | str) -> dict:
+        """List a drum plugin's pads (FPC): the MIDI note each pad plays, its colour, its name.
+
+        Write notes at a pad's note to play that pad (fl_send_notes).
+
+        Returns {"index", "pads": [{"pad", "note", "color", "name"?}]} or {"error"}.
+        """
+        try:
+            index = resolve_channel(channel)
+        except ValueError as e:
+            return {"error": str(e)}
+        from fl_studio_mcp.utils.connection import call
+
+        return call("plugins.getPads", {"index": index})
 
     @mcp.tool()
     def fl_next_preset(

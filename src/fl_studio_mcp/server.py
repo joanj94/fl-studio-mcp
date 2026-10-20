@@ -20,30 +20,7 @@ from __future__ import annotations
 
 from fastmcp import FastMCP
 
-from fl_studio_mcp.tools import (
-    register_arrange_tools,
-    register_audio_tools,
-    register_automation_tools,
-    register_browser_tools,
-    register_channel_setup_tools,
-    register_channel_tools,
-    register_group_tools,
-    register_mix_check_tools,
-    register_mixer_tools,
-    register_mixing_tools,
-    register_music_tools,
-    register_pattern_tools,
-    register_piano_roll_tools,
-    register_plugin_tools,
-    register_project_tools,
-    register_roles_tools,
-    register_screen_tools,
-    register_snapshot_tools,
-    register_style_tools,
-    register_transport_tools,
-    register_tuning_tools,
-    register_vocal_tools,
-)
+from fl_studio_mcp.profiles import register_profile
 from fl_studio_mcp.utils.connection import call, get_connection, reset_connection
 
 # Create the MCP server
@@ -105,9 +82,9 @@ Available tool categories:
 Important limitations:
 1. Loading sounds and rendering work on Windows only; loading only for what FL's
    browser shows.
-   Channels and effects can't be deleted, only undone right away (fl_undo).
-2. Playlist clips are placed by fl_arrange only (whole patterns on bar lines,
-   the whole playlist at once); single clips can't be moved. Automation clips
+   fl_delete_channels and fl_delete_effect remove channels and effects.
+2. Playlist clips are placed by fl_arrange (whole patterns on bar lines, the
+   whole playlist at once) or one by one with fl_add_clip/fl_delete_clip. Automation clips
    are made by fl_create_automation (after fl_arrange: it clears the playlist),
    and saved projects are read by fl_read_project (automation and clips).
 3. Note triggering (fl_trigger_note) is real-time only - notes won't persist
@@ -232,29 +209,8 @@ def fl_connection_status() -> dict:
     }
 
 
-# Register all tools
-register_transport_tools(mcp)
-register_mixer_tools(mcp)
-register_group_tools(mcp)
-register_mixing_tools(mcp)
-register_mix_check_tools(mcp)
-register_channel_tools(mcp)
-register_channel_setup_tools(mcp)
-register_browser_tools(mcp)
-register_plugin_tools(mcp)
-register_piano_roll_tools(mcp)
-register_arrange_tools(mcp)
-register_audio_tools(mcp)
-register_automation_tools(mcp)
-register_music_tools(mcp)
-register_project_tools(mcp)
-register_pattern_tools(mcp)
-register_roles_tools(mcp)
-register_style_tools(mcp)
-register_tuning_tools(mcp)
-register_vocal_tools(mcp)
-register_screen_tools(mcp)
-register_snapshot_tools(mcp)
+# Register the tools of the chosen profile (FL_MCP_PROFILE, default all)
+register_profile(mcp)
 
 
 def main():

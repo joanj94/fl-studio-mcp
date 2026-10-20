@@ -50,7 +50,7 @@ SAMPLES: dict[str, Any] = {
 }
 
 # Parameters whose valid values are restricted, by parameter name.
-NAMED_SAMPLES: dict[str, Any] = {"mode": "song", "bpm": 140.0}
+NAMED_SAMPLES: dict[str, Any] = {"mode": "song", "bpm": 140.0, "color": "red"}
 
 
 class NumericFLModule(MagicMock):

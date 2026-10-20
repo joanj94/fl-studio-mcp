@@ -62,7 +62,8 @@ READS = {
     "plugins.getPresetCount", "plugins.getColor", "plugins.listPresets", "browser.getFocused",
     "playlist.getState", "playlist.getSelectedTrack", "playlist.getTracks",
     "playlist.getSongPosition", "arrangement.getMarkers", "mixer.getPeaks",
-    "project.getSnapshot",
+    "project.getSnapshot", "api.list", "mixer.getEq", "project.getUndoHistory",
+    "arrangement.getSelection", "plugins.getPads", "plugins.getCurrentPreset",
 }
 
 

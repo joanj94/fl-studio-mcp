@@ -186,12 +186,88 @@ def handle_dev_reload_script() -> dict:
     return {"reloaded": str(path)}
 
 
+# Modules `api.call` may reach. ilmcp is FL 2026's own module behind its built-in
+# assistant (adds/removes channels and effects); it isn't importable everywhere.
+API_MODULES = ("arrangement", "channels", "device", "general", "midi", "mixer", "patterns",
+               "playlist", "plugins", "transport", "ui", "ilmcp")
+
+
+def _api_module(name: str):
+    """An FL API module by name, or None when this FL doesn't have it."""
+    try:
+        return __import__(name)
+    except Exception:
+        return None
+
+
+def _json_value(value):
+    """`value` if it can go into the JSON response as it is, else its text."""
+    try:
+        json.dumps(value)
+        return value
+    except (TypeError, ValueError):
+        return repr(value)
+
+
+def _api_target(params: dict):
+    """(module object, error) for api.call/api.list."""
+    name = params.get("module")
+    if name not in API_MODULES:
+        return None, "module must be one of: %s" % ", ".join(API_MODULES)
+    module = _api_module(name)
+    if module is None:
+        return None, "module %s is not available in this FL Studio" % name
+    return module, ""
+
+
+def handle_api_call(params: dict) -> dict:
+    """Call one function of FL's API with JSON arguments (for what no tool covers yet)."""
+    module, error = _api_target(params)
+    if error:
+        return {"error": error}
+    function = params.get("function")
+    args = params.get("args", [])
+    kwargs = params.get("kwargs", {})
+    if not isinstance(function, str) or not function or function.startswith("_"):
+        return {"error": "function must be a public function name"}
+    if not isinstance(args, list) or not isinstance(kwargs, dict):
+        return {"error": "args must be a list and kwargs an object"}
+    target = getattr(module, function, None)
+    if not callable(target):
+        return {"error": "%s has no function %s" % (params["module"], function)}
+    try:
+        result = target(*args, **kwargs)
+    except Exception as e:
+        return {"error": "%s.%s raised %r" % (params["module"], function, e)}
+    return {"module": params["module"], "function": function, "result": _json_value(result)}
+
+
+def handle_api_list(params: dict) -> dict:
+    """The public functions and constants of an FL API module, optionally filtered by text."""
+    module, error = _api_target(params)
+    if error:
+        return {"error": error}
+    search = str(params.get("search", "")).lower()
+    names = [n for n in sorted(dir(module)) if not n.startswith("_") and search in n.lower()]
+    values = {n: getattr(module, n) for n in names}
+    return {
+        "module": params["module"],
+        "functions": [n for n in names if callable(values[n])],
+        "constants": {n: _json_value(v) for n, v in values.items()
+                      if isinstance(v, (int, float, str, bool))},
+    }
+
+
 def dispatch_command(action: str, params: dict) -> dict:
     """Route command to appropriate handler and return result."""
 
     # Transport commands
     if action == "dev.reloadScript":
         return handle_dev_reload_script()
+    if action == "api.call":
+        return handle_api_call(params)
+    if action == "api.list":
+        return handle_api_list(params)
     if action == "transport.start":
         return handle_transport_start()
     elif action == "transport.stop":
@@ -328,8 +404,26 @@ def dispatch_command(action: str, params: dict) -> dict:
         return handle_mixer_get_track_effects(params)
     elif action == "project.undo":
         return handle_project_undo(params)
+    elif action == "project.redo":
+        return handle_project_redo(params)
+    elif action == "project.getUndoHistory":
+        return handle_project_get_undo_history()
+    elif action == "project.setTimeSignature":
+        return handle_project_set_time_signature(params)
+    elif action == "mixer.getEq":
+        return handle_mixer_get_eq(params)
+    elif action == "mixer.setEq":
+        return handle_mixer_set_eq(params)
     elif action == "plugins.listPresets":
         return handle_plugins_list_presets(params)
+    elif action == "plugins.selectPreset":
+        return handle_plugins_select_preset(params)
+    elif action == "plugins.getCurrentPreset":
+        return handle_plugins_get_current_preset(params)
+    elif action == "plugins.getPads":
+        return handle_plugins_get_pads(params)
+    elif action == "patterns.setColor":
+        return handle_patterns_set_color(params)
     elif action == "browser.getFocused":
         return handle_browser_get_focused()
     elif action == "browser.navigate":
@@ -370,6 +464,12 @@ def dispatch_command(action: str, params: dict) -> dict:
         return handle_arrangement_jump_to_next_marker()
     elif action == "arrangement.getMarkers":
         return handle_arrangement_get_markers()
+    elif action == "arrangement.getSelection":
+        return handle_arrangement_get_selection()
+    elif action == "arrangement.setSelection":
+        return handle_arrangement_set_selection(params)
+    elif action == "arrangement.clearSelection":
+        return handle_arrangement_clear_selection()
     elif action == "patterns.clone":
         return handle_patterns_clone(params)
     elif action == "mixer.getPeaks":
@@ -1461,6 +1561,105 @@ def handle_plugins_list_presets(params: dict) -> dict:
     return {"count": count, "presets": names}
 
 
+def handle_plugins_select_preset(params: dict) -> dict:
+    """Switch a plugin to one of its internal presets by name (exact, else a unique part).
+
+    The API only steps (nextPreset/prevPreset, wrapping), so it steps the shorter way.
+    Seen live: the current preset's name only follows the steps after the command has
+    returned, so the server checks it with plugins.getCurrentPreset.
+    """
+    index = params.get("index", 0)
+    slot_index = params.get("slot_index", -1)
+    wanted = str(params.get("name", "")).strip().lower()
+    use_global = True
+    if not wanted:
+        return {"error": "Give the preset's name"}
+    error = _check_plugin_target(index, slot_index)
+    if error:
+        return {"error": error}
+    names = [plugins.getName(index, slot_index, midi.FPN_Preset, p, use_global)
+             for p in range(plugins.getPresetCount(index, slot_index, use_global))]
+    exact = [i for i, n in enumerate(names) if n.lower() == wanted]
+    matches = exact or [i for i, n in enumerate(names) if wanted in n.lower()]
+    if len(matches) != 1:
+        found = ", ".join(names[i] for i in matches[:10])
+        return {"error": "No preset is named like %r" % wanted if not matches
+                else "%d presets match %r: %s" % (len(matches), wanted, found)}
+    target = matches[0]
+
+    current = _current_preset(index, slot_index)
+    if current not in names:
+        return {"error": "The plugin's current preset %r isn't in its list" % current}
+    position = names.index(current)
+    forward = (target - position) % len(names)
+    steps = forward if forward <= len(names) - forward else forward - len(names)
+    step = plugins.nextPreset if steps > 0 else plugins.prevPreset
+    for _ in range(abs(steps)):
+        step(index, slot_index, use_global)
+    return {"index": index, "preset": names[target], "steps": steps}
+
+
+def _check_plugin_target(index, slot_index) -> str:
+    """An error message unless index/slot_index name a loaded plugin."""
+    if any(isinstance(v, bool) or not isinstance(v, int) for v in (index, slot_index)):
+        return "index and slot_index must be integers"
+    if not plugins.isValid(index, slot_index, True):
+        return "There is no plugin there"
+    return ""
+
+
+def _current_preset(index, slot_index) -> str:
+    return plugins.getName(index, slot_index, midi.FPN_Preset, midi.GPN_GetCurrentPreset, True)
+
+
+def handle_plugins_get_current_preset(params: dict) -> dict:
+    """The name of the preset a plugin is on (getName with GPN_GetCurrentPreset)."""
+    index = params.get("index", 0)
+    slot_index = params.get("slot_index", -1)
+    error = _check_plugin_target(index, slot_index)
+    if error:
+        return {"error": error}
+    return {"index": index, "preset": _current_preset(index, slot_index)}
+
+
+def _hex_from_bgr(color: int) -> str:
+    return "#%02X%02X%02X" % (color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF)
+
+
+def handle_plugins_get_pads(params: dict) -> dict:
+    """A drum plugin's pads (FPC): the note each plays, its colour and its name."""
+    index = params.get("index", 0)
+    error = _check_plugin_target(index, -1)
+    if error:
+        return {"error": error}
+    count = plugins.getPadInfo(index, -1, 0, -1, True)
+    pads = []
+    for pad in range(count):
+        note = plugins.getPadInfo(index, -1, 1, pad, True)
+        info = {"pad": pad, "note": note,
+                "color": _hex_from_bgr(plugins.getPadInfo(index, -1, 2, pad, True))}
+        name = plugins.getName(index, -1, midi.FPN_Semitone, note, True)
+        if name:
+            info["name"] = name
+        pads.append(info)
+    return {"index": index, "pads": pads}
+
+
+def handle_patterns_set_color(params: dict) -> dict:
+    """Set a pattern's colour (its clips in the playlist take it)."""
+    index = params.get("index")
+    error = _check_pattern_index(index)
+    if error:
+        return {"error": error}
+    parts = [params.get(key) for key in ("red", "green", "blue")]
+    if any(isinstance(p, bool) or not isinstance(p, int) or not 0 <= p <= 255 for p in parts):
+        return {"error": "red, green and blue must be integers 0-255"}
+    red, green, blue = parts
+    patterns.setPatternColor(index, (red << 16) | (green << 8) | blue)
+    color = patterns.getPatternColor(index) & 0xFFFFFF
+    return {"index": index, "color": "#%06X" % color}
+
+
 # =============================================================================
 # Browser Handlers
 # =============================================================================
@@ -1684,6 +1883,158 @@ def handle_project_undo(params: dict) -> dict:
     }
 
 
+def handle_project_redo(params: dict) -> dict:
+    """Step forward again in FL's undo history (after an undo)."""
+    steps = params.get("steps", 1)
+    if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= MAX_UNDO_STEPS:
+        return {"error": "steps must be 1-%d" % MAX_UNDO_STEPS}
+    for _ in range(steps):
+        general.undoDown()
+    return {"redone": steps, "position": general.getUndoLevelHint()}
+
+
+def handle_project_get_undo_history() -> dict:
+    """Position in FL's undo history ("1/12": newest of 12) and whether changes are unsaved."""
+    return {
+        "position": general.getUndoLevelHint(),
+        "count": general.getUndoHistoryCount(),
+        "unsaved_changes": general.getChangedFlag() != 0,
+    }
+
+
+TIME_SIGNATURE_DENOMINATORS = (2, 4, 8, 16)
+MAX_TIME_SIGNATURE_NUMERATOR = 16
+
+
+def handle_project_set_time_signature(params: dict) -> dict:
+    """Set the project's time signature (general.setNumerator/setDenominator, seen live).
+
+    Checked by the bar length FL reports afterwards (getRecPPB).
+    """
+    numerator = params.get("numerator")
+    denominator = params.get("denominator")
+    if not isinstance(numerator, int) or isinstance(numerator, bool) or not (
+            1 <= numerator <= MAX_TIME_SIGNATURE_NUMERATOR):
+        return {"error": "numerator must be 1-%d" % MAX_TIME_SIGNATURE_NUMERATOR}
+    if not isinstance(denominator, int) or isinstance(denominator, bool) or (
+            denominator not in TIME_SIGNATURE_DENOMINATORS):
+        return {"error": "denominator must be one of %s" % (TIME_SIGNATURE_DENOMINATORS,)}
+    general.setNumerator(numerator)
+    general.setDenominator(denominator)
+    ppq = general.getRecPPQ()
+    beats = general.getRecPPB() / ppq if ppq else 0
+    if abs(beats - 4 * numerator / denominator) > 1e-6:
+        return {"error": "FL Studio's bars are %g beats long after setting %d/%d"
+                         % (beats, numerator, denominator)}
+    return {"numerator": numerator, "denominator": denominator, "beats_per_bar": beats}
+
+
+# =============================================================================
+# The mixer's built-in EQ (three bands on every track, no plugin)
+# =============================================================================
+
+EQ_SEARCH_STEPS = 24
+
+
+def _eq_bands(track: int) -> list:
+    return [
+        {
+            "band": band,
+            "gain_db": round(mixer.getEqGain(track, band, 1), 2),
+            "frequency_hz": round(mixer.getEqFrequency(track, band, 1), 1),
+            "bandwidth": round(mixer.getEqBandwidth(track, band), 4),
+        }
+        for band in range(mixer.getEqBandCount())
+    ]
+
+
+def handle_mixer_get_eq(params: dict) -> dict:
+    """A mixer track's built-in EQ: gain (dB), frequency (Hz) and bandwidth (0-1) per band."""
+    track = params.get("track")
+    error = _check_mixer_track(track)
+    if error:
+        return {"error": error}
+    return {"track": track, "bands": _eq_bands(track)}
+
+
+def _find_position(set_position, read, target):
+    """The 0-1 position whose reading is `target`, found by halving; None if out of range.
+
+    FL sets EQ gain and frequency by position but reads them in dB/Hz too.
+    """
+    set_position(0.0)
+    bottom = read()
+    set_position(1.0)
+    top = read()
+    if not min(bottom, top) <= target <= max(bottom, top):
+        return None, (bottom, top)
+    rising = top >= bottom
+    low, high = 0.0, 1.0
+    for _ in range(EQ_SEARCH_STEPS):
+        middle = (low + high) / 2
+        set_position(middle)
+        if (read() < target) == rising:
+            low = middle
+        else:
+            high = middle
+    set_position((low + high) / 2)
+    return (low + high) / 2, (bottom, top)
+
+
+def _is_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def handle_mixer_set_eq(params: dict) -> dict:
+    """Set one band of a mixer track's built-in EQ: gain_db, frequency_hz and/or bandwidth."""
+    track = params.get("track")
+    band = params.get("band")
+    gain_db = params.get("gain_db")
+    frequency_hz = params.get("frequency_hz")
+    bandwidth = params.get("bandwidth")
+    error = _check_mixer_track(track)
+    if error:
+        return {"error": error}
+    bands = mixer.getEqBandCount()
+    if not isinstance(band, int) or isinstance(band, bool) or not 0 <= band < bands:
+        return {"error": "band must be 0-%d" % (bands - 1)}
+    if gain_db is None and frequency_hz is None and bandwidth is None:
+        return {"error": "Give gain_db, frequency_hz and/or bandwidth"}
+    for name, value in (("gain_db", gain_db), ("frequency_hz", frequency_hz),
+                        ("bandwidth", bandwidth)):
+        if value is not None and not _is_number(value):
+            return {"error": "%s must be a number" % name}
+    if bandwidth is not None and not 0 <= bandwidth <= 1:
+        return {"error": "bandwidth must be 0-1"}
+
+    before = (mixer.getEqGain(track, band), mixer.getEqFrequency(track, band))
+    searches = [
+        ("gain_db", gain_db, lambda v: mixer.setEqGain(track, band, v),
+         lambda: mixer.getEqGain(track, band, 1)),
+        ("frequency_hz", frequency_hz, lambda v: mixer.setEqFrequency(track, band, v),
+         lambda: mixer.getEqFrequency(track, band, 1)),
+    ]
+    def restore() -> None:  # nothing of a refused or failed call stays
+        mixer.setEqGain(track, band, before[0])
+        mixer.setEqFrequency(track, band, before[1])
+
+    for name, target, set_position, read in searches:
+        if target is None:
+            continue
+        try:
+            position, (bottom, top) = _find_position(set_position, read, target)
+        except Exception:
+            restore()
+            raise
+        if position is None:
+            restore()
+            return {"error": "%s must be %g to %g on this band"
+                             % (name, min(bottom, top), max(bottom, top))}
+    if bandwidth is not None:
+        mixer.setEqBandwidth(track, band, bandwidth)
+    return {"track": track, "bands": _eq_bands(track)}
+
+
 # =============================================================================
 # Playlist
 # =============================================================================
@@ -1809,6 +2160,52 @@ def handle_arrangement_get_markers() -> dict:
             break
         names.append(name)
     return {"markers": [{"index": i, "name": n} for i, n in enumerate(names)]}
+
+
+MAX_SELECTION_BAR = 10000
+
+
+def _selection() -> dict:
+    """The playlist's time selection in bars (start_bar from 1, end_bar exclusive)."""
+    if not arrangement.selectionIsActive():
+        return {"active": False}
+    bar = general.getRecPPB()
+    start, end = arrangement.selectionStart(), arrangement.selectionEnd()
+    return {"active": True, "start_bar": round(start / bar + 1, 4),
+            "end_bar": round(end / bar + 1, 4)}
+
+
+def handle_arrangement_get_selection() -> dict:
+    return _selection()
+
+
+def handle_arrangement_set_selection(params: dict) -> dict:
+    """Select bars start_bar up to (not including) end_bar in the playlist.
+
+    Seen live: arrangement.selectionSet takes ticks and reads back exactly. In song
+    mode FL plays and renders only the selection.
+    """
+    start_bar = params.get("start_bar")
+    end_bar = params.get("end_bar")
+    for value in (start_bar, end_bar):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not (
+                1 <= value <= MAX_SELECTION_BAR):
+            return {"error": "start_bar and end_bar must be 1-%d" % MAX_SELECTION_BAR}
+    if end_bar <= start_bar:
+        return {"error": "end_bar must come after start_bar"}
+    bar = general.getRecPPB()
+    arrangement.selectionSet(int(round((start_bar - 1) * bar)), int(round((end_bar - 1) * bar)))
+    selection = _selection()
+    if not selection["active"] or abs(selection["start_bar"] - start_bar) > 1e-3 or abs(
+            selection["end_bar"] - end_bar) > 1e-3:
+        arrangement.selectionClear()
+        return {"error": "FL Studio didn't take the selection: %r" % (selection,)}
+    return selection
+
+
+def handle_arrangement_clear_selection() -> dict:
+    arrangement.selectionClear()
+    return _selection()
 
 
 def handle_arrangement_jump_to_next_marker() -> dict:
@@ -2078,7 +2475,9 @@ def handle_project_apply_state(params: dict) -> dict:
         return {"error": "channels must be a list of channels 0-%d" % (count - 1)}
     skipped = []
     changed = sum(_apply_track(track, last, skipped) for track in tracks)
-    if tracks:  # restoring channels only leaves every mute and solo as it is
+    # Restoring channels only, or effects only (a chain), leaves every mute and solo
+    # as it is: taking the solos off would put back older mutes too.
+    if any("is_muted" in t or "is_solo" in t for t in tracks):
         changed += _apply_mutes_and_solos(tracks, last)
     changed += sum(_apply_channel(channel, last) for channel in rack)
     return {"changed": changed, "skipped": skipped}

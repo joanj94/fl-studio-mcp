@@ -487,3 +487,27 @@ def register_arrange_tools(mcp: FastMCP) -> None:
                 except RuntimeError:
                     pass  # FL isn't answering: whatever failed above says so
         return {**result, "channels": [t["name"] for t in tracks]}
+
+    @mcp.tool()
+    def fl_set_playlist_selection(start_bar: float | None = None,
+                                  end_bar: float | None = None) -> dict:
+        """Select bars in the playlist (a time selection), or clear the selection.
+
+        In song mode FL then loops playback over the selection (handy to listen
+        to one section with fl_play). To render some bars, fl_render takes
+        start_bar/end_bar itself.
+
+        Args:
+            start_bar: First bar (1 is the song's start). Omit both to clear.
+            end_bar: The bar the selection ends at (not included).
+
+        Returns {"active", "start_bar", "end_bar"} or {"error"}.
+        """
+        if start_bar is None and end_bar is None:
+            return call("arrangement.clearSelection")
+        return call("arrangement.setSelection", {"start_bar": start_bar, "end_bar": end_bar})
+
+    @mcp.tool()
+    def fl_get_playlist_selection() -> dict:
+        """The playlist's time selection, if any: {"active", "start_bar", "end_bar"}."""
+        return call("arrangement.getSelection")

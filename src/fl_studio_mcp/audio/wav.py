@@ -64,3 +64,17 @@ def read_wav(path: Path) -> tuple[np.ndarray, int]:
     raw = chunks[b"data"]
     raw = raw[:len(raw) - len(raw) % block_align]  # drop a cut-off last frame
     return _to_float(raw, format_tag, bits).reshape(-1, channels), rate
+
+
+def write_wav(path: Path, samples: np.ndarray, rate: int) -> None:
+    """Write samples (frames, or frames x channels, in -1.0..1.0) as a 32-bit float WAV."""
+    data = np.asarray(samples, dtype=np.float32)
+    if data.ndim == 1:
+        data = data[:, None]
+    channels = data.shape[1]
+    body = data.astype("<f4").tobytes()
+    fmt = struct.pack("<HHIIHH", _FLOAT, channels, rate, rate * channels * 4, channels * 4, 32)
+    header = (b"RIFF" + struct.pack("<I", 4 + 8 + len(fmt) + 8 + len(body)) + b"WAVE"
+              + b"fmt " + struct.pack("<I", len(fmt)) + fmt
+              + b"data" + struct.pack("<I", len(body)))
+    Path(path).write_bytes(header + body)

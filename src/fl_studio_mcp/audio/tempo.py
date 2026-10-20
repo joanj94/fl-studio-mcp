@@ -99,3 +99,37 @@ def estimate_tempo(mono: np.ndarray, rate: int, low: float = MIN_BPM,
         "confidence": round(float(max(0.0, min(1.0, confidence))), 2),
         "alternatives": alternatives,
     }
+
+
+LOOP_BARS = (1, 2, 4, 8, 16, 32)
+LOOP_TOLERANCE = 0.06  # a guess within 6 % picks the bar count
+
+
+NAME_MATCH_BPM = 0.5  # a number in the name this close to a candidate is its tempo
+
+
+def loop_tempo(seconds: float, guess: float | None, beats_per_bar: int = 4,
+               low: float = MIN_BPM, high: float = MAX_BPM,
+               numbers: tuple[float, ...] = ()) -> dict:
+    """The exact tempo of a loop from its length: a loop is a whole number of bars.
+
+    Every bar count in LOOP_BARS gives a tempo; the one nearest `guess` (a tempo
+    from the name or estimate_tempo, compared by ratio) wins when within
+    LOOP_TOLERANCE, else none does. Before that, a number from the file name that
+    matches a candidate within NAME_MATCH_BPM wins ("SMPL_155_Vocal_Loop": seen on
+    the user's packs, the heard tempo was half of it). Returns {"bars", "bpm",
+    "candidates"}.
+    """
+    if seconds <= 0 or beats_per_bar <= 0:
+        raise ValueError("The loop's length and beats per bar must be positive")
+    candidates = [{"bars": bars, "bpm": round(60 * bars * beats_per_bar / seconds, 2)}
+                  for bars in LOOP_BARS
+                  if low <= 60 * bars * beats_per_bar / seconds <= high]
+    best = next((c for c in candidates for n in numbers
+                 if abs(c["bpm"] - n) <= NAME_MATCH_BPM), None)
+    if best is None and guess and candidates:
+        nearest = min(candidates, key=lambda c: abs(np.log(c["bpm"] / guess)))
+        if abs(nearest["bpm"] / guess - 1) <= LOOP_TOLERANCE:
+            best = nearest
+    return {"bars": best and best["bars"], "bpm": best and best["bpm"],
+            "candidates": candidates}

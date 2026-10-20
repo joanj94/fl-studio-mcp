@@ -30,14 +30,19 @@ def _load_source(name: str, path: Path) -> ModuleType:
 def no_real_input(monkeypatch: pytest.MonkeyPatch) -> None:
     """No test may drive the real keyboard or mouse (FL Studio could be running)."""
     from fl_studio_mcp.tools import piano_roll
-    from fl_studio_mcp.utils import win_focus
+    from fl_studio_mcp.utils import gopher, win_focus
 
     def refuse(*args: object) -> None:
         raise AssertionError("a test tried to use the real keyboard or mouse")
 
+    def unreachable(*args: object) -> None:
+        raise OSError("tests don't reach FL's Gopher page")
+
     # Windows' own libraries: through them keys and close messages reach a running FL Studio.
     monkeypatch.setattr(win_focus, "_libraries", refuse)
     monkeypatch.setattr(piano_roll, "run_script_from_menu", lambda: False)
+    # FL's debugging port: a running FL started by fl_launch would answer on it.
+    monkeypatch.setattr(gopher, "_targets", unreachable)
 
 
 @pytest.fixture

@@ -151,6 +151,17 @@ def test_apply_state_keeps_a_solo_and_a_default_track_name(controller, mix):
     assert mix.names[2] == "Insert 2"  # set as "" (FL's default name), not as a name
 
 
+def test_effects_only_leave_mutes_and_solos_alone(controller, mix):
+    mix.solo.add(1)
+    mix.muted.add(2)
+
+    controller.dispatch_command("project.applyState", {"tracks": [
+        {"index": 3, "effects": [{"slot": 0, "plugin": "Fruity Limiter", "params": [0.1]}]}]})
+
+    assert mix.solo == {1} and mix.muted == {2}
+    assert mix.effects[(3, 0)]["params"][0] == 0.1
+
+
 def test_apply_state_skips_an_effect_that_was_replaced(controller, mix):
     state = controller.dispatch_command("project.getSnapshot", {})
     mix.effects[(3, 0)]["name"] = "Fruity Reeverb 2"

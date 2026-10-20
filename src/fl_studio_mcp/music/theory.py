@@ -10,6 +10,7 @@ from fl_studio_mcp.music.model import (
     MIDI_MAX,
     MIDI_MIN,
     SHARP_NAMES,
+    Note,
     pitch_class,
 )
 
@@ -257,3 +258,93 @@ def progression(
             symbol = token
         resolved.append(Chord(symbol, tuple(chord(symbol, octave))))
     return resolved
+
+
+# --- Voice leading and basslines ---------------------------------------------------------
+
+BASS_MOVEMENTS = ("root", "root_fifth", "octave")
+# How far (semitones) a led chord may drift from the first chord's register.
+REGISTER_REACH = 12
+
+
+def chord_root(symbol: str) -> int:
+    """Pitch class of a chord symbol's root (a slash chord's bass is ignored)."""
+    match = _CHORD_SYMBOL.match(symbol.strip())
+    if not match:
+        raise ValueError(f"Invalid chord symbol '{symbol}'")
+    return pitch_class(match.group(1))
+
+
+def _voicings(pitches: list[int], centre: float) -> list[list[int]]:
+    """Every inversion of a chord, in every octave near `centre`."""
+    found = []
+    base = sorted(pitches)
+    for inversion in range(len(base)):
+        voiced = base[inversion:] + [p + 12 for p in base[:inversion]]
+        for shift in range(-3, 4):
+            moved = [p + 12 * shift for p in voiced]
+            mean = sum(moved) / len(moved)
+            if abs(mean - centre) <= REGISTER_REACH and MIDI_MIN <= moved[0] and (
+                    moved[-1] <= MIDI_MAX):
+                found.append(moved)
+    return found
+
+
+def _distance(previous: list[int], voicing: list[int]) -> int:
+    """Total movement of the voices, each to the nearest voice of the next chord."""
+    return sum(min(abs(p - q) for q in voicing) for p in previous) + sum(
+        min(abs(q - p) for p in previous) for q in voicing)
+
+
+def voice_lead(chords: list[list[int]]) -> list[list[int]]:
+    """Voice each chord after the first with the least movement from the one before.
+
+    Pitch classes are kept; the first chord stays as given and the others stay
+    within an octave of its register.
+    """
+    if not chords:
+        return []
+    led = [sorted(chords[0])]
+    centre = sum(led[0]) / len(led[0])
+    for pitches in chords[1:]:
+        options = _voicings(pitches, centre) or [sorted(pitches)]
+        led.append(min(options, key=lambda v: (_distance(led[-1], v),
+                                               abs(sum(v) / len(v) - centre))))
+    return led
+
+
+def bassline(chords: list[str], grid: str = "x...", step: float = 0.25,
+             beats_per_chord: float = 4.0, octave: int = 2, movement: str = "root",
+             start: float = 0.0, velocity: float = 0.8, key: str | None = None,
+             scale: str = "major") -> list[Note]:
+    """A bassline from chords: the step grid repeated over each chord, on its root.
+
+    Args:
+        grid: Step pattern (rhythm syntax: x hit, X accent, - tie, . rest).
+        movement: root (every hit on the root), root_fifth (root, fifth, ...) or
+            octave (root, the octave above, ...).
+    """
+    from fl_studio_mcp.music.rhythm import parse_grid
+
+    if movement not in BASS_MOVEMENTS:
+        raise ValueError(f"movement must be one of: {', '.join(BASS_MOVEMENTS)}")
+    hits, steps = parse_grid(grid)
+    if not hits:
+        raise ValueError("The bass grid has no hits")
+    span = steps * step
+    repeats = max(1, round(beats_per_chord / span))
+    offsets = {"root": (0, 0), "root_fifth": (0, 7), "octave": (0, 12)}[movement]
+    notes = []
+    for index, resolved in enumerate(progression(chords, key=key, scale=scale)):
+        root = 12 * (octave + 1) + chord_root(resolved.symbol)
+        chord_start = start + index * beats_per_chord
+        number = 0
+        for repeat in range(repeats):
+            for hit in hits:
+                time = chord_start + repeat * span + hit.step * step
+                if time >= chord_start + beats_per_chord - 1e-9:
+                    continue
+                accent = min(1.0, velocity * 1.2) if hit.accent else velocity
+                notes.append(Note(root + offsets[number % 2], time, hit.length * step, accent))
+                number += 1
+    return notes

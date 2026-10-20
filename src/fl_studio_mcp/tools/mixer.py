@@ -312,3 +312,41 @@ def register_mixer_tools(mcp: FastMCP) -> None:
             return f"Error: {result['error']}"
 
         return f"Track {track} stereo separation set to {separation}"
+
+    @mcp.tool()
+    def fl_get_track_eq(track: int) -> dict:
+        """Read a mixer track's built-in 3-band EQ (no plugin needed).
+
+        Returns {"track", "bands": [{"band" 0-2 (low, mid, high), "gain_db",
+        "frequency_hz", "bandwidth" (0-1)}]} or {"error"}.
+        """
+        from fl_studio_mcp.utils.connection import call
+
+        return call("mixer.getEq", {"track": track})
+
+    @mcp.tool()
+    def fl_set_track_eq(track: int, band: int, gain_db: float | None = None,
+                        frequency_hz: float | None = None,
+                        bandwidth: float | None = None) -> dict:
+        """Set one band of a mixer track's built-in EQ: a quick cut or boost, no plugin.
+
+        For surgical EQ use an effect (fl_apply_intent "remove_mud" etc.); this is
+        the mixer's own EQ on every track, read back after setting.
+
+        Args:
+            track: Mixer track (0 = master).
+            band: 0 low, 1 mid, 2 high.
+            gain_db: The band's gain in dB (the range FL allows is given on error).
+            frequency_hz: The band's frequency in Hz.
+            bandwidth: 0-1 (narrow to wide).
+
+        Returns {"track", "bands"} as read back, or {"error"}.
+        """
+        from fl_studio_mcp.utils.connection import call
+
+        params = {"track": track, "band": band}
+        for key, value in (("gain_db", gain_db), ("frequency_hz", frequency_hz),
+                           ("bandwidth", bandwidth)):
+            if value is not None:
+                params[key] = value
+        return call("mixer.setEq", params)
