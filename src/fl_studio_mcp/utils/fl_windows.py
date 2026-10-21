@@ -81,6 +81,14 @@ MESSAGE_BUTTON_CLASS = "TQuickFocusBtn"  # its buttons, e.g. Ok and Cancel, left
 MESSAGE_BUTTON_OFFSET = (20, 12)  # a point inside a button
 # The settings window of a piano roll script that has one (the stock scripts do).
 SCRIPT_DIALOG_CLASS = "TScriptDialog"
+# FL's own "Save as" window for a project without a file (seen live in FL 2026.1.6):
+# a Name box (the topmost TQuickEdit), and Skip, Save, Cancel buttons FL draws itself.
+NEW_PROJECT_FORM_CLASS = "TNewProjForm"
+QUICK_EDIT_CLASS = "TQuickEdit"
+# Button centres from the form's bottom-right corner (485 x 404 window: Save at 338, 360).
+NEW_PROJECT_BUTTONS = {"save": (-147, -44), "cancel": (-61, -44)}
+_WM_CHAR = 0x0102
+_VK_SPACE = 0x20
 # Seen live: after an entry is chosen FL acts at once, but the menu's window fades
 # out for most of a second. A menu still there after this long is a menu left open.
 MENU_FADE_SECONDS = 1.5
@@ -391,6 +399,41 @@ def playlist_panel() -> PlaylistPanel | None:
 def click_in_window(hwnd: int, x: int, y: int) -> bool:
     """Left-click at a point of one of FL's windows (its own coordinates), by posted message."""
     return _post_click(win_focus._libraries()[0], hwnd, (x, y))
+
+
+def type_new_project_name(name: str) -> bool:
+    """Type a name into FL's Save as window, over the selected default name.
+
+    Seen live: WM_SETTEXT changes nothing the box shows, posted characters do, and
+    a space only arrives with its key press around it. False unless exactly one
+    such window with a Name box is open.
+    """
+    user32, kernel32 = win_focus._libraries()
+    forms = top_level_handles(user32, kernel32, NEW_PROJECT_FORM_CLASS)
+    if len(forms) != 1:
+        return False
+    boxes = _visible_children(user32, forms[0], QUICK_EDIT_CLASS)
+    if not boxes:
+        return False
+    box = wintypes.HWND(min(boxes, key=lambda hwnd: _rect(user32, hwnd)[1]))
+    for character in name:
+        if character == " ":
+            user32.PostMessageW(box, _WM_KEYDOWN, _VK_SPACE, 0x00390001)
+        user32.PostMessageW(box, _WM_CHAR, ord(character), 1)
+        if character == " ":
+            user32.PostMessageW(box, _WM_KEYUP, _VK_SPACE, 0xC0390001)
+    return True
+
+
+def click_new_project_button(button: str) -> bool:
+    """Click "save" or "cancel" in FL's Save as window; False unless exactly one is open."""
+    user32, kernel32 = win_focus._libraries()
+    forms = top_level_handles(user32, kernel32, NEW_PROJECT_FORM_CLASS)
+    if len(forms) != 1:
+        return False
+    left, top, right, bottom = _rect(user32, forms[0])
+    dx, dy = NEW_PROJECT_BUTTONS[button]
+    return _post_click(user32, forms[0], (right - left + dx, bottom - top + dy))
 
 
 def maximize_window(hwnd: int) -> bool:

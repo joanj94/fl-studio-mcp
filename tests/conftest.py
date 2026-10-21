@@ -43,6 +43,9 @@ def no_real_input(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(piano_roll, "run_script_from_menu", lambda: False)
     # FL's debugging port: a running FL started by fl_launch would answer on it.
     monkeypatch.setattr(gopher, "_targets", unreachable)
+    # The port policy on this computer (scripts/enable_fl_assistant_port.ps1) would make
+    # the tools open FL's Gopher panel.
+    monkeypatch.setattr(gopher, "policy_set", lambda: False)
 
 
 @pytest.fixture

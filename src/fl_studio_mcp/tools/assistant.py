@@ -27,7 +27,8 @@ LAUNCH_TIMEOUT = 120.0
 POLL_INTERVAL = 0.5
 WELCOME_CLASS = "TWelcomeWizard"
 REGISTRY_PATHS = r"SOFTWARE\Image-Line\Shared\Paths"
-HINT = ("Start FL Studio with fl_launch (it opens WebView2's debugging port for FL only). "
+HINT = ("Start FL Studio with fl_launch (it opens WebView2's debugging port for FL only), "
+        "or run scripts/enable_fl_assistant_port.ps1 once so FL opens it however it starts. "
         "Without it the tools fall back to FL's menus and browser.")
 
 
@@ -81,6 +82,23 @@ def _wait(condition, timeout: float) -> bool:
     return True
 
 
+def _open_assistant(timeout: float) -> str:
+    """Close FL's welcome window and open the Gopher panel until its page answers.
+
+    Seen live: FL creates its WebView2, and so opens the port, only with the panel's
+    first page, and the welcome window (which comes a while after the main window)
+    keeps the panel from opening. Raises gopher.GopherError.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        _close_welcome()
+        try:
+            return gopher.open_panel(timeout=min(gopher.PANEL_TIMEOUT, timeout), create=True)
+        except gopher.GopherError:
+            if time.monotonic() >= deadline:
+                raise
+
+
 def register_assistant_tools(mcp: FastMCP) -> None:
     """Register FL launch, assistant and raw API tools with the MCP server."""
 
@@ -93,7 +111,8 @@ def register_assistant_tools(mcp: FastMCP) -> None:
         are added and deleted by FL's own tools (no browser walks or menus) and piano
         roll notes go through FL's own script runner (~10 times faster than the menu).
         A FL that is already running without the port has to be closed first (save
-        the project); this never closes it.
+        the project); this never closes it. With the port policy set
+        (scripts/enable_fl_assistant_port.ps1) any start of FL will do.
 
         Args:
             project: A .flp to open. Default: FL's start-up template.
@@ -102,25 +121,22 @@ def register_assistant_tools(mcp: FastMCP) -> None:
         """
         if project is not None and not Path(project).is_file():
             return {"error": f"There is no project file {project!r}"}
-        if _fl_running():
-            if not gopher.port_open():
-                return {"error": "FL Studio is running without the debugging port. Save the "
-                                 "project, close FL Studio, then call fl_launch to restart it."}
-            launched = False
-        else:
+        launched = not _fl_running()
+        if launched:
             program = fl_program()
             if not program:
                 return {"error": "FL Studio's program wasn't found; set FL_MCP_FL_EXE to it"}
             env = {**os.environ, **gopher.launch_environment()}
             _start([program, *([project] if project else [])], env)
-            if not _wait(_fl_running, LAUNCH_TIMEOUT) or not _wait(gopher.port_open,
-                                                                   LAUNCH_TIMEOUT):
+            if not _wait(_fl_running, LAUNCH_TIMEOUT):
                 return {"error": f"FL Studio didn't start within {LAUNCH_TIMEOUT:g} s"}
-            launched = True
-            _close_welcome()
         try:
-            gopher.open_panel()
+            _open_assistant(LAUNCH_TIMEOUT if launched else gopher.PANEL_TIMEOUT)
             names = [t.get("name") for t in gopher.list_tools()]
+        except gopher.PortClosed:
+            return {"error": "FL Studio is running without the debugging port. Save the "
+                             "project, close FL Studio, then call fl_launch to restart it "
+                             "(or run scripts/enable_fl_assistant_port.ps1 once)."}
         except gopher.GopherError as e:
             return {"error": str(e)}
         result: dict[str, Any] = {"launched": launched, "assistant_tools": len(names)}
@@ -136,7 +152,7 @@ def register_assistant_tools(mcp: FastMCP) -> None:
         Returns {"reachable", "tools": [{"name", "description", "arguments"}]} or,
         when they can't be reached, {"reachable": false, "port_open", "hint"}.
         """
-        if gopher.page_url() is None:
+        if gopher.reachable() is None:
             return {"reachable": False, "port_open": gopher.port_open(), "port": gopher.port(),
                     "hint": HINT}
         try:

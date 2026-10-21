@@ -13,9 +13,11 @@ without menus or confirm boxes (seen live, 0.5 s a call, the trial included).
 
 To reach the page, FL must be started with WebView2's debugging port open
 (`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`, see
-`launch_environment`) and the Gopher panel must have been opened once in that FL session
-(`open_panel` posts Alt+F1). Nothing else is needed: no login, and the panel may stay
-hidden.
+`launch_environment`), or with WebView2's AdditionalBrowserArguments policy set for FL's
+program (`scripts/enable_fl_assistant_port.ps1`), and the Gopher panel must have been
+opened once in that FL session (`open_panel` posts Alt+F1). Seen live: FL creates its
+WebView2, and with it the port, only when the panel first opens, so a closed port says
+nothing until then. Nothing else is needed: no login, and the panel may stay hidden.
 
 Piano roll scripts sent this way run at module level (seen live: `apply()` is never called,
 module-level edits to `flpianoroll.score` stay) and can't write files (`open` fails inside
@@ -29,6 +31,7 @@ what the debugging protocol needs: text frames, masked as a client must.
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import os
 import re
@@ -54,7 +57,10 @@ _WM_SYSKEYDOWN = 0x0104
 _WM_SYSKEYUP = 0x0105
 _ALT_DOWN = 1 << 29
 
+POLICY_KEY = r"SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments"
+
 _lock = threading.Lock()
+_tried_windows: set[int] = set()  # FL windows whose panel was opened for the policy
 _RESULT = re.compile(re.escape(RESULT_MARKER) + r"([A-Za-z0-9+/=]+)" + re.escape(RESULT_MARKER))
 
 
@@ -66,6 +72,10 @@ class ToolError(GopherError):
     """FL ran the tool and answered with an error (as opposed to no or a lost answer)."""
 
 
+class PortClosed(GopherError):
+    """FL runs without WebView2's debugging port (not started by fl_launch, no policy)."""
+
+
 def port() -> int:
     """The debugging port: FL_MCP_GOPHER_PORT, else 9222."""
     value = os.environ.get("FL_MCP_GOPHER_PORT", "")
@@ -75,6 +85,27 @@ def port() -> int:
 def launch_environment() -> dict[str, str]:
     """Environment variables FL must be started with for the Gopher page to be reachable."""
     return {"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS": f"--remote-debugging-port={port()}"}
+
+
+def policy_set() -> bool:
+    """True when WebView2's policy opens this port for an FL program (machine or user)."""
+    try:
+        import winreg
+    except ImportError:
+        return False
+    wanted = f"--remote-debugging-port={port()}"
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        try:
+            with winreg.OpenKey(hive, POLICY_KEY) as key:
+                index = 0
+                while True:
+                    name, value, _kind = winreg.EnumValue(key, index)
+                    index += 1
+                    if name.upper().startswith("FL") and wanted in str(value):
+                        return True
+        except OSError:  # no key, or no more values
+            continue
+    return False
 
 
 # --- WebSocket, as little as the debugging protocol needs -----------------------------
@@ -149,6 +180,12 @@ def _connect(url: str, timeout: float) -> socket.socket:
 # --- The page --------------------------------------------------------------------------
 
 
+# Seen live while FL was starting: a poll of the closed port got its own request back
+# as the answer (a loopback connection to itself), which http.client raises as
+# BadStatusLine, not OSError.
+UNREADABLE = (OSError, ValueError, http.client.HTTPException)
+
+
 def _targets(debug_port: int) -> list[dict]:
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     with opener.open(f"http://127.0.0.1:{debug_port}/json/list", timeout=2) as response:
@@ -159,7 +196,7 @@ def page_url(debug_port: int | None = None) -> str | None:
     """The Gopher page's debugging WebSocket, or None (port closed, panel never opened)."""
     try:
         targets = _targets(debug_port or port())
-    except (OSError, ValueError):
+    except UNREADABLE:
         return None
     for target in targets:
         url = urlparse(target.get("url", ""))
@@ -172,29 +209,38 @@ def port_open(debug_port: int | None = None) -> bool:
     try:
         _targets(debug_port or port())
         return True
-    except (OSError, ValueError):
+    except UNREADABLE:
         return False
 
 
-def open_panel(timeout: float = PANEL_TIMEOUT) -> str:
-    """Open FL's Gopher panel (posted Alt+F1) and wait for its page; returns its WebSocket.
-
-    Raises GopherError when FL isn't running or wasn't started with the debugging port.
-    """
-    url = page_url()
-    if url:
-        return url
+def _fl_window() -> tuple[Any, int]:
     from fl_studio_mcp.utils import win_focus
 
     user32, kernel32 = win_focus._libraries()
     main = win_focus.find_fl_window(user32, kernel32)
     if main is None:
         raise GopherError("FL Studio is not running")
-    if not port_open():
-        raise GopherError(
-            "FL Studio's assistant page can't be reached: FL must be started with "
-            f"{launch_environment()} (fl_launch does that)."
-        )
+    return user32, main
+
+
+def open_panel(timeout: float = PANEL_TIMEOUT, create: bool = False) -> str:
+    """Open FL's Gopher panel (posted Alt+F1) and wait for its page; returns its WebSocket.
+
+    With the port closed this fails at once, unless `create`: FL opens the port with
+    the panel's first page, so the panel is opened and the port waited for.
+    Raises PortClosed when FL has no debugging port, GopherError when FL isn't running.
+    """
+    url = page_url()
+    if url:
+        return url
+    user32, main = _fl_window()
+    closed = PortClosed(
+        "FL Studio's assistant page can't be reached: FL must be started with "
+        f"{launch_environment()} (fl_launch does that), or run "
+        "scripts/enable_fl_assistant_port.ps1 once."
+    )
+    if not create and not port_open():
+        raise closed
     user32.PostMessageW(main, _WM_SYSKEYDOWN, _VK_F1, _ALT_DOWN | 1)
     user32.PostMessageW(main, _WM_SYSKEYUP, _VK_F1, _ALT_DOWN | (3 << 30) | 1)
     deadline = time.monotonic() + timeout
@@ -203,7 +249,28 @@ def open_panel(timeout: float = PANEL_TIMEOUT) -> str:
         if url:
             return url
         time.sleep(0.25)
+    if not port_open():
+        raise closed
     raise GopherError("FL's Gopher panel didn't open (Alt+F1) within %g s" % timeout)
+
+
+def reachable() -> str | None:
+    """The page's WebSocket when FL's tools can be used, else None.
+
+    With the policy set, FL's port only opens with the panel, so the panel is opened
+    once per FL window (never again for that window, also when it failed).
+    """
+    url = page_url()
+    if url or port_open() or not policy_set():
+        return url
+    try:
+        _user32, main = _fl_window()
+        if main in _tried_windows:
+            return None
+        _tried_windows.add(main)
+        return open_panel(create=True)
+    except GopherError:
+        return None
 
 
 def evaluate(script: str, timeout: float) -> Any:

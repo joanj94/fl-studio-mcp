@@ -23,6 +23,10 @@ stock presets:
   500 - track (uint16).
 - A playlist track's name is event 239 after the track's own event 238, whose
   first four bytes are the track's number.
+- Every pattern starts with event 65 (its number) twice, first with its notes,
+  then with its name. Notes are event 224, 24 bytes a note, step sequencer hits
+  included (seen in FL 2026 saves made with a licence; the trial's saves
+  scramble the numbers, so numbers beyond FL's 999 patterns mean none are known).
 """
 
 from __future__ import annotations
@@ -40,6 +44,10 @@ ARRANGEMENT_NAME = 241
 PLAYLIST = 233
 TRACK_DATA = 238
 TRACK_NAME = 239
+PATTERN_NEW = 65
+PATTERN_NOTES = 224
+NOTE_SIZE = 24
+MAX_PATTERN = 999
 # After these the channels are over (mixer and arrangement data follow).
 END_OF_CHANNELS = (ARRANGEMENT_NAME, PLAYLIST, TRACK_DATA)
 
@@ -87,6 +95,8 @@ class Project:
     links: dict[int, tuple[int, ...]]  # automation channel -> REC event ids it controls
     arrangements: tuple[Arrangement, ...]
     track_names: dict[int, str] = field(default_factory=dict)
+    # pattern -> notes it holds; None when the save's pattern numbers can't be trusted
+    pattern_notes: dict[int, int] | None = field(default_factory=dict)
 
 
 def describe_target(rec_id: int) -> dict:
@@ -157,6 +167,8 @@ class _Reading:
     links: dict[int, list[int]] = field(default_factory=dict)
     arrangements: list[Arrangement] = field(default_factory=list)
     track_names: dict[int, str] = field(default_factory=dict)
+    pattern_notes: dict[int, int] = field(default_factory=dict)
+    pattern: int | None = None
     in_channels: bool = False
     arrangement_name: str | None = None
     track: int | None = None
@@ -184,6 +196,9 @@ def _song_event(reading: _Reading, event_id: int, data: bytes, text) -> None:
         reading.track = struct.unpack_from("<I", data, 0)[0]
     elif event_id == TRACK_NAME and reading.track is not None:
         reading.track_names[reading.track] = text()
+    elif event_id == PATTERN_NOTES and reading.pattern is not None:
+        reading.pattern_notes[reading.pattern] = (
+            reading.pattern_notes.get(reading.pattern, 0) + len(data) // NOTE_SIZE)
 
 
 def read_project(flp: FlpFile) -> Project:
@@ -195,6 +210,9 @@ def read_project(flp: FlpFile) -> Project:
             reading.in_channels = True
         elif event.id in END_OF_CHANNELS:
             reading.in_channels = False
+        elif event.id == PATTERN_NEW:
+            reading.pattern = event.value
+            reading.pattern_notes.setdefault(reading.pattern, 0)
         if reading.in_channels:
             _channel_event(reading, event.id, event.data, event.text)
         _song_event(reading, event.id, event.data, event.text)
@@ -205,4 +223,6 @@ def read_project(flp: FlpFile) -> Project:
         links={channel: tuple(ids) for channel, ids in reading.links.items()},
         arrangements=tuple(reading.arrangements),
         track_names=reading.track_names,
+        pattern_notes=(reading.pattern_notes if all(
+            0 < p <= MAX_PATTERN for p in reading.pattern_notes) else None),
     )

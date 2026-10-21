@@ -26,8 +26,10 @@ def fl_state(monkeypatch: pytest.MonkeyPatch) -> dict:
         state["running"] = True
         state["port"] = True
 
-    def open_panel(timeout=0):
+    def open_panel(timeout=0, create=False):
         state["panel"] += 1
+        if not state["port"]:
+            raise gopher.PortClosed("no port")
         return "ws://fake"
 
     monkeypatch.setattr(assistant, "_fl_running", lambda: state["running"])
@@ -84,10 +86,30 @@ def test_launch_of_a_running_fl_without_the_port_says_to_restart(tools, fl_state
 
     assert "restart" in result["error"].lower()
     assert fl_state["started"] == []
+    assert fl_state["panel"] >= 1  # the port only opens with the panel: it was tried
+
+
+def test_launch_retries_the_panel_until_the_welcome_window_is_gone(tools, fl_state,
+                                                                    monkeypatch):
+    """The welcome window comes after FL's main window and keeps the panel shut."""
+    tries = []
+
+    def open_panel(timeout=0, create=False):
+        tries.append(create)
+        if len(tries) < 3:
+            raise gopher.GopherError("didn't open")
+        return "ws://fake"
+
+    monkeypatch.setattr(gopher, "open_panel", open_panel)
+    monkeypatch.setattr(assistant, "LAUNCH_TIMEOUT", 5)
+    result = tools["fl_launch"]()
+
+    assert result["launched"] is True and tries == [True, True, True]
+    assert len(fl_state["closed"]) == 3
 
 
 def test_status_without_the_port(tools, monkeypatch):
-    monkeypatch.setattr(gopher, "page_url", lambda *a: None)
+    monkeypatch.setattr(gopher, "reachable", lambda: None)
     monkeypatch.setattr(gopher, "port_open", lambda *a: False)
 
     assert tools["fl_assistant_status"]() == {"reachable": False, "port_open": False,
@@ -95,7 +117,7 @@ def test_status_without_the_port(tools, monkeypatch):
 
 
 def test_status_lists_fls_tools(tools, monkeypatch):
-    monkeypatch.setattr(gopher, "page_url", lambda *a: "ws://x")
+    monkeypatch.setattr(gopher, "reachable", lambda: "ws://x")
     monkeypatch.setattr(gopher, "list_tools", lambda: [
         {"name": "play", "description": "Starts playback", "inputSchema": {}}])
 

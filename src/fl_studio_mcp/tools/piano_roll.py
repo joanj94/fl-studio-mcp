@@ -177,7 +177,7 @@ def _run_in_fl(request_ids: list[str]) -> tuple[dict | None, str] | None:
     batch changes nothing), one reads the state back, which is exported here as the
     script would. None when FL's runner can't be reached: the menu is used instead.
     """
-    if not request_ids or gopher.page_url() is None:
+    if not request_ids or gopher.reachable() is None:
         return None
     with _run_lock:
         return _run_queue_in_fl()

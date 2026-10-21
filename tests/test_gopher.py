@@ -112,6 +112,17 @@ def test_closed_port_is_none(monkeypatch):
     assert gopher.page_url(9222) is None
 
 
+def test_a_garbled_answer_while_fl_starts_is_a_closed_port(monkeypatch):
+    def echo(port):  # seen live: the poll got its own request back
+        import http.client
+
+        raise http.client.BadStatusLine("GET /json/list HTTP/1.1")
+
+    monkeypatch.setattr(gopher, "_targets", echo)
+    assert gopher.port_open(9222) is False
+    assert gopher.page_url(9222) is None
+
+
 def reply(text: str, is_error: bool = False) -> str:
     return json.dumps({"jsonrpc": "2.0", "id": "1", "result": {
         "content": [{"type": "text", "text": text}], "isError": is_error}})
@@ -240,3 +251,51 @@ def test_loose_answers_undo_fls_other_escapes(evaluated):
     ]
 
     assert gopher.call_tool("x", {}) == 'a "q" \\ b\u00e9'
+
+
+@pytest.fixture
+def fl_window(monkeypatch):
+    """FL's main window and the Alt+F1 posted to it."""
+    posted = []
+
+    class User32:
+        def PostMessageW(self, *args):  # noqa: N802 - Windows' name
+            posted.append(args)
+
+    monkeypatch.setattr(gopher, "_fl_window", lambda: (User32(), 42))
+    monkeypatch.setattr(gopher, "_tried_windows", set())
+    return posted
+
+
+def test_with_the_policy_the_panel_is_opened_once_per_fl_window(fl_window, monkeypatch):
+    opened = []
+    monkeypatch.setattr(gopher, "page_url", lambda *a: None)
+    monkeypatch.setattr(gopher, "port_open", lambda *a: False)
+    monkeypatch.setattr(gopher, "policy_set", lambda: True)
+    monkeypatch.setattr(gopher, "open_panel",
+                        lambda timeout=0, create=False: opened.append(create) or "ws://page")
+
+    assert gopher.reachable() == "ws://page"
+    assert gopher.reachable() is None  # not again for the same window
+    assert opened == [True]
+
+
+def test_without_the_policy_a_closed_port_is_left_alone(fl_window, monkeypatch):
+    monkeypatch.setattr(gopher, "page_url", lambda *a: None)
+    monkeypatch.setattr(gopher, "port_open", lambda *a: False)
+    monkeypatch.setattr(gopher, "policy_set", lambda: False)
+
+    assert gopher.reachable() is None
+    assert fl_window == []
+
+
+def test_open_panel_with_a_closed_port_fails_at_once_unless_creating(fl_window, monkeypatch):
+    monkeypatch.setattr(gopher, "page_url", lambda *a: None)
+    monkeypatch.setattr(gopher, "port_open", lambda *a: False)
+
+    with pytest.raises(gopher.PortClosed):
+        gopher.open_panel()
+    assert fl_window == []
+    with pytest.raises(gopher.PortClosed):
+        gopher.open_panel(timeout=0.01, create=True)
+    assert len(fl_window) == 2  # Alt+F1 down and up were posted

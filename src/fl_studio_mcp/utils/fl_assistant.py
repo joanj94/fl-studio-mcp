@@ -29,8 +29,8 @@ class UnexpectedChange(AssistantError):
 
 
 def available() -> bool:
-    """True when FL's assistant tools can be reached (FL started with fl_launch)."""
-    return gopher.page_url() is not None
+    """True when FL's assistant tools can be reached (fl_launch, or the port policy)."""
+    return gopher.reachable() is not None
 
 
 def _tool(name: str, arguments: dict) -> str | None:

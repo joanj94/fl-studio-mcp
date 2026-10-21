@@ -94,6 +94,15 @@ The installer installs the dependencies and walks you through creating the MIDI 
 
 **Recommended (FL Studio 2026, Windows):** let the AI start FL with `fl_launch` instead of starting it yourself. FL then runs with its own built-in assistant tools reachable, and channels, effects and piano roll notes go through those: no menu walks, and notes about ten times faster. Everything still works without it, through FL's menus.
 
+To have this however FL is started (desktop shortcut, double-clicked project), run once:
+
+```powershell
+.\scripts\enable_fl_assistant_port.ps1          # or: .\install.ps1 -AssistantPort
+.\scripts\enable_fl_assistant_port.ps1 -Remove  # undo
+```
+
+It sets WebView2's `AdditionalBrowserArguments` policy for FL's program only (`HKLM\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments`, value `FL64.exe` = `--remote-debugging-port=9222`), so it asks for administrator rights. It takes effect at FL's next start. FL only opens the port once its assistant panel (Gopher, Alt+F1) has opened, so the tools open that panel by themselves the first time they need it. The port only listens on your own computer, but any program running there could use it to drive FL's assistant panel while FL is open.
+
 ### Other MCP clients
 
 Any MCP client that speaks stdio works. Point it at:
@@ -201,7 +210,7 @@ Set these in the server entry's `env` block if you need them.
 | `FL_MCP_OURENDER` | The `ourender` program for sung vocals. |
 | `FL_MCP_FL_EXE` | FL Studio's program for `fl_launch`, if the installer's registry entry isn't right. |
 | `FL_MCP_GOPHER_PORT` | The debugging port `fl_launch` opens for FL's own assistant (default 9222). |
-| `FL_MCP_PROFILE` | Offer only some tool groups, for clients that struggle with many tools: `minimal` (73 tools), `compose` (124), `mix` (130), `analysis` (37), or several joined by commas (`compose,mix`). Default `all` (176). `fl_batch` (several tool calls in one) is always there. |
+| `FL_MCP_PROFILE` | Offer only some tool groups, for clients that struggle with many tools: `minimal` (73 tools), `compose` (124), `mix` (131), `analysis` (37), or several joined by commas (`compose,mix`). Default `all` (177). `fl_batch` (several tool calls in one) is always there. |
 
 ## Using it
 
@@ -254,7 +263,7 @@ Pitch names are scientific: **C4 = MIDI 60**. FL's piano roll labels the same no
 
 ## Tool reference
 
-The server has 176 tools in total (set `FL_MCP_PROFILE` to offer fewer). Expand a group to see its tools. Tools marked **(W)** are Windows only.
+The server has 177 tools in total (set `FL_MCP_PROFILE` to offer fewer). Expand a group to see its tools. Tools marked **(W)** are Windows only.
 
 <details>
 <summary><b>FL's own assistant and raw API</b> (6)</summary>
@@ -371,7 +380,7 @@ Plugins are addressed by channel (index or role), or by mixer track and slot.
 </details>
 
 <details>
-<summary><b>Mixer and mixing</b> (30)</summary>
+<summary><b>Mixer and mixing</b> (31)</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -392,6 +401,7 @@ Plugins are addressed by channel (index or role), or by mixer track and slot.
 | `fl_watch_peaks_start` / `fl_watch_peaks_status` / `fl_watch_peaks_stop` | Watch the meters in the background through a whole playthrough |
 | `fl_take_snapshot` / `fl_restore_snapshot` / `fl_list_snapshots` | Keep the whole mix (levels, routing, effects and their parameters, channels) and restore only what changed |
 | `fl_find_unused` | What the project no longer uses; changes nothing |
+| `fl_clean_unused` | Remove it: unused mixer tracks lose effects and name, empty patterns are reset, automation without a clip is deleted (needs a fresh save); spare patterns are only listed **(W)** |
 
 </details>
 
@@ -406,7 +416,7 @@ Plugins are addressed by channel (index or role), or by mixer track and slot.
 | `fl_arrange_in_pattern` | The older way: the song written into one long pattern |
 | `fl_create_automation` | An automation clip with your points for a volume, pan or any plugin parameter **(W)** |
 | `fl_read_project` | Automation and clips from the project's last save or autosave |
-| `fl_save_project` | File > Save, confirmed by the file on disk **(W)** |
+| `fl_save_project` | File > Save, confirmed by the file on disk; a new project is saved under a name (`Projects/<name>/<name>.flp`) through FL's own Save as window **(W)** |
 | `fl_export_midi` | A pattern, or the song given as sections, as a `.mid` file |
 | `fl_screenshot` | A PNG of FL or one panel, taken in the background **(W)** |
 

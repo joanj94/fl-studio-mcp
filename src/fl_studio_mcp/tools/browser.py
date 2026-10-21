@@ -376,6 +376,28 @@ def _locked(command, *args) -> dict:
         return {"error": str(e)}
 
 
+def delete_effect(track: int, slot: int) -> dict:
+    """fl_delete_effect's work (also used by fl_clean_unused)."""
+    if fl_assistant.available():
+        try:
+            with keyboard_lock:
+                name = fl_assistant.delete_effect(track, slot)
+            return {"track": track, "slot": slot, "deleted": name, "via": "FL's own tools"}
+        except fl_assistant.AssistantError as e:
+            if "no effect" in str(e):
+                return {"error": str(e)}
+            logger.info("FL's own tools failed (%s); using the mixer's menu", e)
+    try:
+        with keyboard_lock:
+            name = fl_mixer.delete_effect(track, slot)
+    except fl_mixer.MixerError as e:
+        return {"error": str(e)}
+    except Exception as e:  # e.g. Windows refusing a call: a tool answers, it doesn't raise
+        fl_windows.close_popup_menus()
+        return {"error": f"The mixer could not be driven: {e!r}"}
+    return {"track": track, "slot": slot, "deleted": name}
+
+
 def register_browser_tools(mcp: FastMCP) -> None:
     """Register browser and loading tools with the MCP server."""
 
@@ -527,24 +549,7 @@ def register_browser_tools(mcp: FastMCP) -> None:
 
         Returns {"track", "slot", "deleted": plugin name} or {"error"}.
         """
-        if fl_assistant.available():
-            try:
-                with keyboard_lock:
-                    name = fl_assistant.delete_effect(track, slot)
-                return {"track": track, "slot": slot, "deleted": name, "via": "FL's own tools"}
-            except fl_assistant.AssistantError as e:
-                if "no effect" in str(e):
-                    return {"error": str(e)}
-                logger.info("FL's own tools failed (%s); using the mixer's menu", e)
-        try:
-            with keyboard_lock:
-                name = fl_mixer.delete_effect(track, slot)
-        except fl_mixer.MixerError as e:
-            return {"error": str(e)}
-        except Exception as e:  # e.g. Windows refusing a call: a tool answers, it doesn't raise
-            fl_windows.close_popup_menus()
-            return {"error": f"The mixer could not be driven: {e!r}"}
-        return {"track": track, "slot": slot, "deleted": name}
+        return delete_effect(track, slot)
 
     @mcp.tool()
     def fl_add_effect(path: str, track: int) -> dict:

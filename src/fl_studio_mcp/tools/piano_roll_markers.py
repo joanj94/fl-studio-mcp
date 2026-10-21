@@ -90,7 +90,7 @@ def _read() -> list[dict]:
 
 
 def _prepare(channel: int | str | None, pattern: int | None) -> str | None:
-    if gopher.page_url() is None:
+    if gopher.reachable() is None:
         return f"Piano roll markers need FL's own script runner. {HINT}"
     return _select_target(channel, pattern)
 

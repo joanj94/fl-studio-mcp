@@ -98,6 +98,7 @@ def _from_save(info: dict) -> dict:
     return {
         "file": str(file),
         "saved": datetime.fromtimestamp(file.stat().st_mtime).isoformat(timespec="seconds"),
+        "pattern_notes": project.pattern_notes,
         "patterns_not_in_playlist": [
             {"pattern": p["index"], "name": p.get("name", "")}
             for p in info.get("patterns", []) if p["index"] not in placed
@@ -124,6 +125,130 @@ def _silent_channels(info: dict) -> list[dict]:
         if info.get("current_pattern"):
             call("patterns.select", {"index": info["current_pattern"]})
     return silent
+
+
+def _empty_patterns(info: dict, pattern_notes: dict[int, int] | None) -> list[dict]:
+    """Patterns FL lists (named or once used) that hold no notes.
+
+    Seen live: FL reports a bar's length for a pattern without notes, so the length
+    can't tell; the save's note count can. A pattern the save doesn't know (made
+    since) counts as empty only when its length is 0.
+    """
+    empty = []
+    for p in info.get("patterns", []):
+        notes = (pattern_notes or {}).get(p["index"])
+        if notes == 0 or (notes is None and not p.get("length_beats")):
+            empty.append({"pattern": p["index"], "name": p.get("name", "")})
+    return empty
+
+
+def find_unused(from_save: bool = True, check_notes: bool = False) -> dict:
+    """fl_find_unused's report (also the plan of fl_clean_unused)."""
+    info = call("project.getInfo")
+    if "error" in info:
+        return info
+    tracks = call("mixer.getAllTracks")
+    if "error" in tracks:
+        return tracks
+    result: dict[str, Any] = {"mixer_tracks": _unused_tracks(tracks.get("tracks", []))}
+    pattern_notes = None
+    if from_save:
+        saved = _from_save(info)
+        if "error" in saved:
+            result["save"] = saved
+        else:
+            result["save"] = {"file": saved.pop("file"), "saved": saved.pop("saved")}
+            pattern_notes = saved.pop("pattern_notes")
+            result.update(saved)
+    result["empty_patterns"] = _empty_patterns(info, pattern_notes)
+    if check_notes:
+        try:
+            result["silent_channels"] = _silent_channels(info)
+        except (ValueError, RuntimeError) as e:
+            result["silent_channels_error"] = str(e)
+    return result
+
+
+def _clear_track(track: int) -> list[str]:
+    """Delete a mixer track's effects (last slot first) and reset its name; problems found."""
+    from fl_studio_mcp.tools.browser import delete_effect
+
+    effects = call("mixer.getTrackEffects", {"track": track})
+    if "error" in effects:
+        return [f"track {track}: {effects['error']}"]
+    problems = []
+    for effect in sorted(effects.get("effects", []), key=lambda e: -e["slot"]):
+        deleted = delete_effect(track, effect["slot"])
+        if "error" in deleted:
+            problems.append(f"track {track} slot {effect['slot']}: {deleted['error']}")
+    renamed = call("mixer.setTrackName", {"track": track, "name": ""})
+    if "error" in renamed:
+        problems.append(f"track {track} name: {renamed['error']}")
+    return problems
+
+
+def _clean_automation(report: dict) -> tuple[list[str], str | None]:
+    """(deleted channel names, problem) for automation channels without a clip."""
+    if not report.get("automation_without_clip"):
+        return [], None
+    from fl_studio_mcp.tools.channel_setup import delete_channels
+
+    deleted = delete_channels([c["channel"] for c in report["automation_without_clip"]])
+    if "error" in deleted:
+        return [], f"automation channels: {deleted['error']}"
+    return deleted["deleted"], None
+
+
+def clean_unused(mixer_tracks: bool = True, empty_patterns: bool = True,
+                 automation: bool = True) -> dict:
+    """fl_clean_unused's work: what find_unused reports, removed.
+
+    The playlist and the notes are read from the newest save, so they are only
+    used when nothing changed since: a clip or note added since would be missed.
+    """
+    history = call("project.getUndoHistory")
+    if "error" in history:
+        return history
+    use_save = not history.get("unsaved_changes")
+    report = find_unused(from_save=use_save)
+    if "error" in report:
+        return report
+    cleaned: dict[str, list] = {"mixer_tracks": [], "patterns": [], "channels": []}
+    problems: list[str] = []
+    left: dict[str, Any] = {}
+    if empty_patterns:
+        for pattern in report["empty_patterns"]:
+            renamed = call("patterns.rename", {"index": pattern["pattern"], "name": ""})
+            if "error" in renamed:
+                problems.append(f"pattern {pattern['pattern']}: {renamed['error']}")
+            else:
+                cleaned["patterns"].append(pattern["pattern"])
+    if mixer_tracks:
+        for track in report["mixer_tracks"]:
+            found = _clear_track(track["track"])
+            problems += found
+            if not found:
+                cleaned["mixer_tracks"].append(track["track"])
+    if not use_save:
+        left["save"] = ("The project has changes since its last save: save it "
+                        "(fl_save_project), then clean again. Automation channels and "
+                        "empty patterns are found from the save.")
+    elif "error" in report["save"]:
+        left["save"] = report["save"]["error"]
+    elif automation:
+        cleaned["channels"], problem = _clean_automation(report)
+        if problem:
+            problems.append(problem)
+    spares = [p for p in report.get("patterns_not_in_playlist", [])
+              if p["pattern"] not in cleaned["patterns"]]
+    if spares:
+        left["patterns_not_in_playlist"] = spares
+    result: dict[str, Any] = {"cleaned": cleaned}
+    if left:
+        result["left"] = left
+    if problems:
+        result["problems"] = problems
+    return result
 
 
 def register_snapshot_tools(mcp: FastMCP) -> None:
@@ -227,27 +352,25 @@ def register_snapshot_tools(mcp: FastMCP) -> None:
         Returns {"mixer_tracks", "empty_patterns", "patterns_not_in_playlist"?,
         "automation_without_clip"?, "silent_channels"?, "save"?} or {"error"}.
         """
-        info = call("project.getInfo")
-        if "error" in info:
-            return info
-        tracks = call("mixer.getAllTracks")
-        if "error" in tracks:
-            return tracks
-        result: dict[str, Any] = {
-            "mixer_tracks": _unused_tracks(tracks.get("tracks", [])),
-            "empty_patterns": [{"pattern": p["index"], "name": p.get("name", "")}
-                               for p in info.get("patterns", []) if not p.get("length_beats")],
-        }
-        if from_save:
-            saved = _from_save(info)
-            if "error" in saved:
-                result["save"] = saved
-            else:
-                result["save"] = {"file": saved.pop("file"), "saved": saved.pop("saved")}
-                result.update(saved)
-        if check_notes:
-            try:
-                result["silent_channels"] = _silent_channels(info)
-            except (ValueError, RuntimeError) as e:
-                result["silent_channels_error"] = str(e)
-        return result
+        return find_unused(from_save, check_notes)
+
+    @mcp.tool()
+    def fl_clean_unused(mixer_tracks: bool = True, empty_patterns: bool = True,
+                        automation: bool = True) -> dict:
+        """Remove what the project no longer uses (fl_find_unused shows it first).
+
+        - mixer_tracks: tracks that nothing plays into lose their effects and name
+        - empty_patterns: named patterns without notes get their name reset, which
+          makes them unused again
+        - automation: automation channels without a clip in the playlist are deleted.
+          The playlist can only be read from a save, so this is skipped while the
+          project has unsaved changes (save with fl_save_project first).
+
+        Patterns with notes but no clip are never touched (they may be spares):
+        they come back under "left". Each step can be undone with fl_undo.
+        Windows only (effects and channels go through FL's menus or own tools).
+
+        Returns {"cleaned": {"mixer_tracks", "patterns", "channels"}, "left"?,
+        "problems"?} or {"error"}.
+        """
+        return clean_unused(mixer_tracks, empty_patterns, automation)

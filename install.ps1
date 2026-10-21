@@ -11,10 +11,13 @@
 #                       .\install.ps1 -Stems auto   # also stem separation (Demucs): the
 #                                                   # GPU build with an NVIDIA card, else CPU
 #                       (-Stems gpu / cpu choose; leaving -Stems out removes it again)
+#                       .\install.ps1 -AssistantPort  # FL's own assistant tools however FL
+#                                                     # is started (asks for admin rights)
 
 param(
     [ValidateSet("none", "auto", "gpu", "cpu")]
-    [string]$Stems = "none"
+    [string]$Stems = "none",
+    [switch]$AssistantPort
 )
 
 $ErrorActionPreference = "Stop"
@@ -123,6 +126,10 @@ if (Test-Path -LiteralPath $PianoDest) {
     Write-Color "[OK] Piano Roll script installed" "Green"
 } else {
     Write-Color "! Piano Roll script missing at FL Studio path" "Yellow"
+}
+if ($AssistantPort) {
+    & (Join-Path $ScriptDir "scripts\enable_fl_assistant_port.ps1")
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
 # Step 5: Configure Claude
