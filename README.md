@@ -41,7 +41,7 @@ This is a fork of [karl-andres/fl-studio-mcp](https://github.com/karl-andres/fl-
 | Area | Highlights |
 |------|-----------|
 | **Composing** | Piano roll markers (key/scale, time signature, pattern length) and the project's time signature. Notes, chords and drum steps in any channel and pattern, with every note property (slide, porta, pan, fine pitch, velocity, filter). There is also a pure-Python music toolkit: scales, chord symbols, roman numerals, smooth voice leading, basslines from chords, MIDI file import, scale-degree melodies, step grids, Euclidean rhythms, rolls, and transforms (arpeggiate, strum, flam, chop, accents, velocity curves, swing, humanize, quantize, fix overlaps, groove templates, ...). |
-| **Sounds** | Searches FL's browser by name, or by the tempo and key written in sample names ("128bpm", "F#m"), loads samples, presets and instrument plugins into new or existing channels, adds and deletes mixer effects, and deletes channels. |
+| **Sounds** | Searches FL's browser by name, by the tempo and key written in sample names ("128bpm", "F#m"), or by how a sample sounds ("kicks like this one"), loads samples, presets and instrument plugins into new or existing channels, adds and deletes mixer effects, and deletes channels. |
 | **Arranging** | Lays the song out in the playlist (one track per pattern, section by section), adds or deletes single clips, adds time markers, clones patterns, and exports MIDI. |
 | **Automation** | Creates automation clips for volume, pan or *any* plugin parameter, with the points you give it. It can also read the automation and clips stored in a saved project. |
 | **Mixing** | Sets levels in dB and parameters by their display value ("-6 dB", "2.5 kHz"). Applies named moves ("remove_mud", "glue", "dotted_echo") and builds whole effect chains. Mutes or solos groups of tracks by name, routes tracks to buses, and keeps mix snapshots to restore later. |
@@ -201,7 +201,7 @@ Set these in the server entry's `env` block if you need them.
 | `FL_MCP_OURENDER` | The `ourender` program for sung vocals. |
 | `FL_MCP_FL_EXE` | FL Studio's program for `fl_launch`, if the installer's registry entry isn't right. |
 | `FL_MCP_GOPHER_PORT` | The debugging port `fl_launch` opens for FL's own assistant (default 9222). |
-| `FL_MCP_PROFILE` | Offer only some tool groups, for clients that struggle with many tools: `minimal` (73 tools), `compose` (122), `mix` (128), `analysis` (37), or several joined by commas (`compose,mix`). Default `all` (174). `fl_batch` (several tool calls in one) is always there. |
+| `FL_MCP_PROFILE` | Offer only some tool groups, for clients that struggle with many tools: `minimal` (73 tools), `compose` (124), `mix` (130), `analysis` (37), or several joined by commas (`compose,mix`). Default `all` (176). `fl_batch` (several tool calls in one) is always there. |
 
 ## Using it
 
@@ -254,7 +254,7 @@ Pitch names are scientific: **C4 = MIDI 60**. FL's piano roll labels the same no
 
 ## Tool reference
 
-The server has 174 tools in total (set `FL_MCP_PROFILE` to offer fewer). Expand a group to see its tools. Tools marked **(W)** are Windows only.
+The server has 176 tools in total (set `FL_MCP_PROFILE` to offer fewer). Expand a group to see its tools. Tools marked **(W)** are Windows only.
 
 <details>
 <summary><b>FL's own assistant and raw API</b> (6)</summary>
@@ -329,7 +329,7 @@ Notes can carry `velocity`, `release`, `pan`, `fcut`, `fres` (0-1), `slide`, `po
 </details>
 
 <details>
-<summary><b>Channels and sounds</b> (25)</summary>
+<summary><b>Channels and sounds</b> (26)</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -340,6 +340,7 @@ Notes can carry `velocity`, `release`, `pan`, `fcut`, `fres` (0-1), `slide`, `po
 | `fl_route_channel_to_mixer` | Send a channel to a mixer track |
 | `fl_show_channel_editor` | Show or hide a channel's plugin window |
 | `fl_browser_search` | Find samples and presets by name across the browser's folders, in under a second; filter by the tempo or key in their names (`bpm=140`, `key="Am"`, relative keys too) |
+| `fl_browser_similar` | Find samples that *sound* like a given one (brightness, bands, attack, decay, noisiness), whatever their names; measured files are cached |
 | `fl_browser_list` | List a browser folder (`"Packs/Drums/Kicks"`, `"Plugin database/Generators"`, ...) **(W)** |
 | `fl_browser_refresh` | Make FL read its browser folders from disk again **(W)** |
 | `fl_load_in_new_channel` | A new channel from a sample, preset or plugin **(W)** |
@@ -352,7 +353,7 @@ Notes can carry `velocity`, `release`, `pan`, `fcut`, `fres` (0-1), `slide`, `po
 </details>
 
 <details>
-<summary><b>Plugins and effects</b> (16)</summary>
+<summary><b>Plugins and effects</b> (17)</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -362,6 +363,7 @@ Notes can carry `velocity`, `release`, `pan`, `fcut`, `fres` (0-1), `slide`, `po
 | `fl_set_plugin_param_by_value` | Set what the knob should show: `"-6 dB"`, `"2.5 kHz"`, `"1:4"`, `"Peaking"` |
 | `fl_get_preset_count` / `fl_list_presets` / `fl_next_preset` / `fl_prev_preset` | A plugin's own presets |
 | `fl_add_effect` / `fl_delete_effect` | Add or remove a mixer effect **(W)** |
+| `fl_list_effects` | Effect plugins FL has (by category), with the paths `fl_add_effect` takes |
 | `fl_get_track_effects` / `fl_set_effect` | A track's effects; switch one on or off or set its mix |
 
 Plugins are addressed by channel (index or role), or by mixer track and slot.

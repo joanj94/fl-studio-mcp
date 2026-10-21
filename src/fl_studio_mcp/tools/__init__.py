@@ -21,6 +21,7 @@ from fl_studio_mcp.tools.project import register_project_tools
 from fl_studio_mcp.tools.roles import register_roles_tools
 from fl_studio_mcp.tools.screen import register_screen_tools
 from fl_studio_mcp.tools.snapshots import register_snapshot_tools
+from fl_studio_mcp.tools.sounds import register_sound_tools
 from fl_studio_mcp.tools.stems import register_stem_tools
 from fl_studio_mcp.tools.styles import register_style_tools
 from fl_studio_mcp.tools.transport import register_transport_tools
@@ -50,6 +51,7 @@ __all__ = [
     "register_roles_tools",
     "register_screen_tools",
     "register_snapshot_tools",
+    "register_sound_tools",
     "register_stem_tools",
     "register_style_tools",
     "register_tuning_tools",

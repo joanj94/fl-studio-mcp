@@ -51,6 +51,7 @@ GROUPS: dict[str, Callable] = {
     "snapshots": tools.register_snapshot_tools,
     "chains": tools.register_chain_tools,
     "stems": tools.register_stem_tools,
+    "sounds": tools.register_sound_tools,
 }
 
 _BASICS = ("transport", "project", "patterns", "channels", "roles", "screen")
@@ -62,10 +63,10 @@ PROFILES: dict[str, tuple[str, ...]] = {
     # Writing a song: sounds, notes, theory, styles, the playlist, tuning, vocals.
     "compose": (*_BASICS, "browser", "channel_setup", "plugins", "piano_roll",
                 "piano_roll_markers", "music", "arrange", "styles", "tuning", "vocals",
-                "assistant", "stems"),
+                "assistant", "stems", "sounds"),
     # Balancing and checking a song: mixer, effects, renders, automation, snapshots.
     "mix": (*_BASICS, "mixer", "groups", "mixing", "mix_check", "plugins", "browser",
-            "audio", "automation", "snapshots", "chains", "stems"),
+            "audio", "automation", "snapshots", "chains", "stems", "sounds"),
     # Measuring audio files and reading music, mostly without FL.
     "analysis": ("project", "screen", "audio", "music", "styles", "stems"),
 }

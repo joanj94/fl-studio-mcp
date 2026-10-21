@@ -58,6 +58,32 @@ def _files(name: str, folder: Path):
                 yield "/".join((name, *below, file))
 
 
+def files_on_disk(roots: list[tuple[str, Path]], folder: str = "", suffixes=LOADABLE_SUFFIXES):
+    """(browser path, file on disk) of every file below `folder` with one of `suffixes`."""
+    prefix = "/".join(part for part in folder.replace("\\", "/").split("/") if part).lower()
+    for name, root in roots:
+        if prefix and name.lower() != prefix.split("/")[0]:
+            continue
+        for current, _folders, files in os.walk(root):
+            below = Path(current).relative_to(root).parts
+            for file in files:
+                path = "/".join((name, *below, file))
+                if (file.lower().endswith(suffixes)
+                        and (not prefix or (path.lower() + "/").startswith(prefix + "/"))):
+                    yield path, Path(current) / file
+
+
+def disk_path(roots: list[tuple[str, Path]], browser_path: str) -> Path | None:
+    """The file on disk behind a browser path, or None if it isn't in a known folder."""
+    parts = [part for part in browser_path.replace("\\", "/").split("/") if part]
+    for name, root in roots:
+        if parts and name.lower() == parts[0].lower():
+            candidate = root.joinpath(*parts[1:])
+            if candidate.is_file():
+                return candidate
+    return None
+
+
 def search(
     roots: list[tuple[str, Path]], query: str, folder: str = "", limit: int = DEFAULT_LIMIT,
     keep=None,
