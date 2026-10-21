@@ -210,7 +210,7 @@ Set these in the server entry's `env` block if you need them.
 | `FL_MCP_OURENDER` | The `ourender` program for sung vocals. |
 | `FL_MCP_FL_EXE` | FL Studio's program for `fl_launch`, if the installer's registry entry isn't right. |
 | `FL_MCP_GOPHER_PORT` | The debugging port `fl_launch` opens for FL's own assistant (default 9222). |
-| `FL_MCP_PROFILE` | Offer only some tool groups, for clients that struggle with many tools: `minimal` (73 tools), `compose` (124), `mix` (131), `analysis` (37), or several joined by commas (`compose,mix`). Default `all` (177). `fl_batch` (several tool calls in one) is always there. |
+| `FL_MCP_PROFILE` | Offer only some tool groups, for clients that struggle with many tools: `minimal` (73 tools), `compose` (126), `mix` (134), `analysis` (38), or several joined by commas (`compose,mix`). Default `all` (181). `fl_batch` (several tool calls in one) is always there. |
 
 ## Using it
 
@@ -263,7 +263,7 @@ Pitch names are scientific: **C4 = MIDI 60**. FL's piano roll labels the same no
 
 ## Tool reference
 
-The server has 177 tools in total (set `FL_MCP_PROFILE` to offer fewer). Expand a group to see its tools. Tools marked **(W)** are Windows only.
+The server has 181 tools in total (set `FL_MCP_PROFILE` to offer fewer). Expand a group to see its tools. Tools marked **(W)** are Windows only.
 
 <details>
 <summary><b>FL's own assistant and raw API</b> (6)</summary>
@@ -380,7 +380,7 @@ Plugins are addressed by channel (index or role), or by mixer track and slot.
 </details>
 
 <details>
-<summary><b>Mixer and mixing</b> (31)</summary>
+<summary><b>Mixer and mixing</b> (32)</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -389,6 +389,7 @@ Plugins are addressed by channel (index or role), or by mixer track and slot.
 | `fl_mute_track` / `fl_solo_track` / `fl_arm_track` | Mute, solo or arm one track |
 | `fl_set_track_name` / `fl_set_track_color` | Name and colour |
 | `fl_route_track` | Send a track to a bus, or add a send with a level |
+| `fl_duck_track` | Duck a track under the kick (sidechain-style pumping) as one volume automation clip: depth, release, any hit pattern **(W)** |
 | `fl_mute_tracks` / `fl_solo_tracks` / `fl_clear_mute_solo` | Groups by name (`"drums"`) or number; solo keeps buses and sources playing |
 | `fl_set_colors` | Colour tracks and channels by name or hex |
 | `fl_list_intents` / `fl_apply_intent` | Named moves: `remove_mud`, `add_air`, `glue`, `large_hall`, `dotted_echo`, ... scaled by `amount` |
@@ -430,15 +431,18 @@ Plugins are addressed by channel (index or role), or by mixer track and slot.
 </details>
 
 <details>
-<summary><b>Render and audio analysis</b> (10)</summary>
+<summary><b>Render and audio analysis</b> (13)</summary>
 
 | Tool | Description |
 |------|-------------|
 | `fl_render` | Render to WAV or MP3 through FL's export dialog, and measure a WAV **(W)** |
+| `fl_export_song` | Export the finished song as a dated MP3 (Music folder), measured on a WAV of the same render first: loudness, true peak, clipping, clicks, dropouts, phase **(W)** |
 | `fl_render_stems` | Render every channel on its own and summarise each one, optionally with the master's limiter taken out **(W)** |
 | `fl_measure_pitch` | Play one note on a channel and report its real pitch, plus how to transpose the notes into tune **(W)** |
+| `fl_kick_lab` | Render one kick hit alone: punch, sub/thump/mid/high shares, tone, tail; `keep` saves the hit with its effects baked in as a sample **(W)** |
 | `audio_analyze` | Any audio file: LUFS, peak, RMS, crest factor, clipping, spectrum bands, stereo width, key, tempo, loudness over time |
 | `audio_compare` | Your mix next to a reference track |
+| `audio_compare_sections` | Your mix next to a reference 4 bars at a time: drops compared with drops, breaks with breaks (band shares, loudness, how long the breaks last) |
 | `audio_loop_tempo` | A loop's exact tempo from its length (a whole number of bars), picked by the number in its name or the tempo heard |
 | `audio_qc` | Technical checks before release: DC offset, true peak (4x oversampled), clicks, dropouts, out-of-phase seconds, mono loss |
 | `audio_match_eq` | EQ moves (frequency, gain, peaking or shelf) toward a reference track's tonal balance |

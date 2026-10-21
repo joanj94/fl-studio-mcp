@@ -8,6 +8,8 @@ from fl_studio_mcp.tools.browser import register_browser_tools
 from fl_studio_mcp.tools.chains import register_chain_tools
 from fl_studio_mcp.tools.channel_setup import register_channel_setup_tools
 from fl_studio_mcp.tools.channels import register_channel_tools
+from fl_studio_mcp.tools.ducking import register_ducking_tools
+from fl_studio_mcp.tools.export import register_export_tools
 from fl_studio_mcp.tools.groups import register_group_tools
 from fl_studio_mcp.tools.mix_check import register_mix_check_tools
 from fl_studio_mcp.tools.mixer import register_mixer_tools
@@ -42,6 +44,8 @@ __all__ = [
     "register_automation_tools",
     "register_browser_tools",
     "register_chain_tools",
+    "register_ducking_tools",
+    "register_export_tools",
     "register_plugin_tools",
     "register_piano_roll_tools",
     "register_piano_roll_marker_tools",

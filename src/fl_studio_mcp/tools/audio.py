@@ -366,6 +366,65 @@ def register_audio_tools(mcp: FastMCP) -> None:
         return compare(mix, ref)
 
     @mcp.tool()
+    def audio_compare_sections(path: str, reference: str, bars: int = 4,
+                               bpm: float | None = None,
+                               reference_bpm: float | None = None) -> dict:
+        """Compare a mix with a reference section by section: drops with drops, breaks
+        with breaks.
+
+        Each song is cut into sections of `bars` bars at its own tempo (from the
+        song's start), and each section is measured: loudness, and the share of
+        energy per band. Sections within 3 LU of the song's loud parts count as
+        "full", 6 LU or more below as "quiet". Then the mix's full sections are
+        compared with the reference's full ones and its quiet with its quiet, so the
+        songs needn't be as long or laid out alike. Also: how long the quiet runs
+        last and how much louder full is than quiet. It tells where they differ,
+        not which is right. Any format audio_analyze reads.
+
+        Args:
+            path: The mix (render it with fl_render first).
+            reference: The reference track.
+            bars: Bars per section (4/4 assumed).
+            bpm, reference_bpm: The tempos; estimated when left out (check them: a
+                beat with off-beats can read at half or double tempo).
+
+        Returns {"mix": {"bpm", "sections": [{"bar", "start", "lufs", "kind",
+        "below_loud_lu"}]}, "reference": {...}, "full": {"mix_bands",
+        "reference_bands", "difference_db"}, "quiet": {...}, "quiet_runs_bars",
+        "full_over_quiet_lu", "largest_differences"} or {"error"}.
+        """
+        try:
+            from fl_studio_mcp.audio.decode import load_audio
+            from fl_studio_mcp.audio.sections import classify, compare_sections, sections
+            from fl_studio_mcp.audio.tempo import estimate_tempo
+        except ImportError:
+            return {"error": MISSING_NUMPY}
+        songs = {}
+        try:
+            for name, file, given in (("mix", path, bpm), ("reference", reference,
+                                                           reference_bpm)):
+                samples, rate = load_audio(Path(file))
+                tempo = given
+                if tempo is None:
+                    estimate = estimate_tempo(samples.mean(axis=1) if samples.ndim == 2
+                                              else samples, rate)
+                    if estimate is None:
+                        return {"error": f"No tempo could be heard in {file}: give it"}
+                    tempo = estimate["bpm"]
+                found = classify(sections(samples, rate, tempo, bars))
+                songs[name] = {"bpm": tempo, "found": found}
+        except (OSError, ValueError) as e:
+            return {"error": f"Could not compare {path} and {reference}: {e}"}
+        except MemoryError:
+            return {"error": "Not enough memory to compare files this long"}
+        result = {name: {"bpm": song["bpm"], "sections": [
+            {k: v for k, v in s.items() if k != "bands"} for s in song["found"]]}
+            for name, song in songs.items()}
+        result.update(compare_sections(songs["mix"]["found"], songs["reference"]["found"],
+                                       bars))
+        return result
+
+    @mcp.tool()
     def audio_qc(path: str) -> dict:
         """Technical checks of a render before it goes out. Changes nothing.
 

@@ -402,6 +402,34 @@ def create_automation(load: Load, target: dict, start_bar: int, points: list[Poi
     }
 
 
+def automate(points: list[dict], mixer_track: int | None = None,
+             channel: int | str | None = None, parameter: str | int = "volume",
+             name: str | None = None, slot: int | None = None) -> dict:
+    """fl_create_automation's work (also used by fl_duck_track); {"error"} on failure."""
+    try:
+        target = _target(mixer_track, channel, parameter, slot)
+        beats_per_bar = call("project.getInfo").get("beats_per_bar", 4)
+        start_bar, converted = to_points(points, target["kind"], parameter, beats_per_bar)
+    except (ValueError, RuntimeError) as e:
+        return {"error": str(e)}
+    load = Load()
+    try:
+        with keyboard_lock:
+            result = create_automation(load, target, start_bar, converted, name,
+                                       beats_per_bar)
+    except (AutomationError, BrowserError, fl_channel_rack.ChannelRackError) as e:
+        fl_windows.close_popup_menus()
+        return {"error": " ".join(filter(None, [str(e), load.note()]))}
+    except Exception as e:  # e.g. Windows refusing a call: a tool answers, it doesn't raise
+        logger.exception("Creating automation failed unexpectedly")
+        fl_windows.close_popup_menus()
+        return {"error": f"Creating the automation failed: {e!r}."}
+    note = load.note()
+    if note:
+        result["warning"] = note
+    return result
+
+
 def register_automation_tools(mcp: FastMCP) -> None:
     """Register the automation tools with the MCP server."""
 
@@ -508,25 +536,4 @@ def register_automation_tools(mcp: FastMCP) -> None:
 
         Returns {"channel", "name", "start_bar", "length_bars", ...} or {"error"}.
         """
-        try:
-            target = _target(mixer_track, channel, parameter, slot)
-            beats_per_bar = call("project.getInfo").get("beats_per_bar", 4)
-            start_bar, converted = to_points(points, target["kind"], parameter, beats_per_bar)
-        except (ValueError, RuntimeError) as e:
-            return {"error": str(e)}
-        load = Load()
-        try:
-            with keyboard_lock:
-                result = create_automation(load, target, start_bar, converted, name,
-                                           beats_per_bar)
-        except (AutomationError, BrowserError, fl_channel_rack.ChannelRackError) as e:
-            fl_windows.close_popup_menus()
-            return {"error": " ".join(filter(None, [str(e), load.note()]))}
-        except Exception as e:  # e.g. Windows refusing a call: a tool answers, it doesn't raise
-            logger.exception("Creating automation failed unexpectedly")
-            fl_windows.close_popup_menus()
-            return {"error": f"Creating the automation failed: {e!r}."}
-        note = load.note()
-        if note:
-            result["warning"] = note
-        return result
+        return automate(points, mixer_track, channel, parameter, name, slot)
