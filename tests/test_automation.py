@@ -117,6 +117,28 @@ def test_a_playlist_whose_records_cant_be_told_apart_reads_empty():
     assert reader.parse_playlist(b"\x00" * 88) == ()
 
 
+
+def _patterns(*numbers_and_notes: tuple[int, int]) -> FlpFile:
+    """Patterns as FL saves them: notes in a first pass, names in a second."""
+    events = []
+    for number, notes in numbers_and_notes:
+        events.append(Event(65, number.to_bytes(2, "little")))
+        if notes:
+            events.append(Event(224, bytes(24 * notes)))
+    for number, _notes in numbers_and_notes:
+        events += [Event(65, number.to_bytes(2, "little")), Event(193, _text(f"P{number}"))]
+    return FlpFile(0, 2, 96, tuple(events))
+
+
+def test_notes_are_counted_per_pattern():
+    project = reader.read_project(_patterns((1, 3), (2, 0), (5, 16)))
+    assert project.pattern_notes == {1: 3, 2: 0, 5: 16}
+
+
+def test_scrambled_pattern_numbers_of_a_trial_save_count_as_unknown():
+    assert reader.read_project(_patterns((7451, 3), (53198, 0))).pattern_notes is None
+
+
 @pytest.mark.parametrize(("rec_id", "track", "parameter"), [
     (0x71401FC0, 5, "volume"), (0x73C01FC0, 15, "volume"), (0x70801FC0, 2, "volume"),
     (0x70801FC1, 2, "pan"),

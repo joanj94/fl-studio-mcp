@@ -75,17 +75,18 @@ def _busy() -> str | None:
 
 
 def _submenu_opened_low() -> bool:
-    """True if the open submenu starts in the File menu's lower half, where Export is.
+    """True if the open submenu starts below the File menu's first third, where Export is.
 
-    The entries can't be read. Seen live: the submenus near the top of the File
-    menu are the ones that open other projects, and a submenu opens level with
-    its entry.
+    The entries can't be read. Seen live: the submenu near the top of the File menu
+    is "New from template" (about 7 % down), and a submenu opens level with its
+    entry. Export moves up as recent projects are added: with seven of them its
+    submenu opened at 49.7 % of the menu's height, so half was too strict.
     """
     menus = fl_windows.popup_menu_rects()
     if len(menus) != 2:
         return False
     (_, top, _, bottom), (_, submenu_top, _, _) = menus
-    return submenu_top > (top + bottom) / 2
+    return submenu_top > top + (bottom - top) / 3
 
 
 def _opens_submenu(ups: int) -> bool:

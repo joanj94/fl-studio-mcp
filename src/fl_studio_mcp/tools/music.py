@@ -9,16 +9,18 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from fl_studio_mcp.music.midi_file import write_midi
+from fl_studio_mcp.music.midi_file import read_midi, write_midi
 from fl_studio_mcp.music.model import Note, pitch_name
 from fl_studio_mcp.music.rhythm import rhythm_notes, roll
 from fl_studio_mcp.music.theory import (
     CHORD_QUALITIES,
     SCALES,
+    bassline,
     degree_pitch,
     invert,
     progression,
     scale_pitches,
+    voice_lead,
 )
 from fl_studio_mcp.music.transform import (
     ARPEGGIO_MODES,
@@ -107,6 +109,7 @@ def register_music_tools(mcp: FastMCP) -> None:
         start: float = 0.0,
         velocity: float = 0.8,
         inversion: int = 0,
+        voicing: str = "close",
     ) -> dict:
         """Build a chord progression as notes, one chord after another.
 
@@ -119,14 +122,20 @@ def register_music_tools(mcp: FastMCP) -> None:
             beats_per_chord: Length of each chord in beats.
             start: Beat where the first chord starts.
             inversion: Inversion applied to every chord (1 = first, -1 = drop the top note).
+            voicing: "close" (every chord as built) or "smooth" (from the second chord
+                on, each takes the inversion and octave that moves its voices least).
         """
         def build() -> dict[str, Any]:
+            if voicing not in ("close", "smooth"):
+                raise ValueError("voicing must be 'close' or 'smooth'")
             resolved = progression(chords, key=key, scale=scale, octave=octave)
+            voiced = [invert(list(c.pitches), inversion) for c in resolved]
+            if voicing == "smooth":
+                voiced = voice_lead(voiced)
             laid_out = []
             notes = []
-            for i, c in enumerate(resolved):
+            for i, (c, pitches) in enumerate(zip(resolved, voiced)):
                 chord_start = start + i * beats_per_chord
-                pitches = invert(list(c.pitches), inversion)
                 laid_out.append({"symbol": c.symbol, "pitches": pitches,
                                  "names": [pitch_name(p) for p in pitches],
                                  "start": chord_start})
@@ -134,6 +143,35 @@ def register_music_tools(mcp: FastMCP) -> None:
             return _notes_result(notes, chords=laid_out)
 
         return _safe(build)
+
+    @mcp.tool()
+    def music_bassline(
+        chords: list[str],
+        grid: str = "x...",
+        step: float = 0.25,
+        beats_per_chord: float = 4.0,
+        octave: int = 2,
+        movement: str = "root",
+        key: str | None = None,
+        scale: str = "major",
+        start: float = 0.0,
+        velocity: float = 0.8,
+    ) -> dict:
+        """A bassline under chords: a step grid repeated over each chord, on its root.
+
+        Args:
+            chords: Chord symbols or roman numerals, as music_chords takes them.
+            grid: The rhythm, in music_rhythm's grid syntax ("x" hit, "X" accent,
+                "-" tie, "." rest), repeated to fill each chord.
+            step: Beats per grid step (0.25 = 16ths).
+            beats_per_chord: How long each chord lasts.
+            octave: Octave of the roots (2: C2 = MIDI 36).
+            movement: "root", "root_fifth" (alternating) or "octave" (alternating).
+            key, scale: For roman numerals.
+        """
+        return _safe(lambda: _notes_result(bassline(
+            chords, grid=grid, step=step, beats_per_chord=beats_per_chord, octave=octave,
+            movement=movement, start=start, velocity=velocity, key=key, scale=scale)))
 
     @mcp.tool()
     def music_degrees(
@@ -259,3 +297,19 @@ def register_music_tools(mcp: FastMCP) -> None:
             return write_midi(Path(path), tracks, bpm, beats_per_bar)
         except (OSError, ValueError) as e:
             return {"error": str(e)}
+
+    @mcp.tool()
+    def music_import_midi(path: str) -> dict:
+        """Read a MIDI file (.mid) into notes ready for fl_send_notes, one list per part.
+
+        Each track and MIDI channel becomes a part (a type-0 file's channels are
+        split); channel 10 is marked "drums". Times are in beats, so the notes keep
+        their rhythm at any tempo; the file's own tempo is given too.
+
+        Returns {"bpm", "beats_per_bar", "ppq", "tracks": [{"name", "channel",
+        "drums", "notes"}]} or {"error"}.
+        """
+        try:
+            return read_midi(Path(path))
+        except (OSError, ValueError) as e:
+            return {"error": f"Could not read {path}: {e}"}

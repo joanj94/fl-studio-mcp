@@ -12,7 +12,14 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from fl_studio_mcp.utils import browser_index, fl_browser, fl_mixer, fl_windows
+from fl_studio_mcp.utils import (
+    browser_index,
+    fl_assistant,
+    fl_browser,
+    fl_mixer,
+    fl_windows,
+    sample_tags,
+)
 from fl_studio_mcp.utils.connection import call
 from fl_studio_mcp.utils.fl_browser import BrowserError
 from fl_studio_mcp.utils.fl_trigger import keyboard_lock
@@ -269,6 +276,62 @@ def add_effect(load: Load, path: str, track: int) -> dict:
     return result
 
 
+def _native_plugin(path: str) -> str | None:
+    """The plugin a 'Plugin database/...' path names (FL's own tools load by name), else None.
+
+    Presets and samples are files: only the browser loads those.
+    """
+    parts = fl_browser.split_path(path)
+    if len(parts) < 2 or parts[0].lower() != "plugin database":
+        return None
+    name = parts[-1]
+    for suffix in (".fst", ".nfo"):
+        if name.lower().endswith(suffix):
+            name = name[: -len(suffix)]
+    return name
+
+
+def _assistant(load: Load, change, *args) -> dict:
+    """A change through FL's own assistant tools, with the trial's message box handled."""
+    try:
+        result = change(*args)
+    except fl_assistant.AssistantError as e:
+        load.settle()
+        raise BrowserError(str(e)) from e
+    load.settle()
+    _close_plugin_windows()  # FL opens the window of what it added
+    return result
+
+
+def add_channel_natively(load: Load, plugin: str, name: str | None = None) -> dict:
+    """Add an instrument channel with FL's own add_channel; raises BrowserError."""
+    result = _assistant(load, fl_assistant.add_channel, plugin)
+    if name:
+        _fl("channels.setName", {"index": result["index"], "name": name})
+        result["name"] = name
+    return result
+
+
+def add_effect_natively(load: Load, plugin: str, track: int) -> dict:
+    """Add an effect with FL's own add_effect, in the track's first free slot."""
+    return _assistant(load, fl_assistant.add_effect, plugin, track)
+
+
+def run_load_natively(native, fallback) -> dict:
+    """`native` (a run_load result) when FL's own tools are reachable and it worked, else
+    `fallback()`. Only a change that left everything as it was goes the other way.
+    """
+    if fl_assistant.available():
+        result = native()
+        if "error" not in result:
+            result["via"] = "FL's own tools"
+            return result
+        if "unexpected way" in result["error"] or "other channels" in result["error"]:
+            return result
+        logger.info("FL's own tools failed (%s); using the browser", result["error"])
+    return fallback()
+
+
 def _close_menus_left_open() -> None:
     """Close a menu FL left open without acting on the choice made in it.
 
@@ -311,6 +374,28 @@ def _locked(command, *args) -> dict:
             return command(*args)
     except BrowserError as e:
         return {"error": str(e)}
+
+
+def delete_effect(track: int, slot: int) -> dict:
+    """fl_delete_effect's work (also used by fl_clean_unused)."""
+    if fl_assistant.available():
+        try:
+            with keyboard_lock:
+                name = fl_assistant.delete_effect(track, slot)
+            return {"track": track, "slot": slot, "deleted": name, "via": "FL's own tools"}
+        except fl_assistant.AssistantError as e:
+            if "no effect" in str(e):
+                return {"error": str(e)}
+            logger.info("FL's own tools failed (%s); using the mixer's menu", e)
+    try:
+        with keyboard_lock:
+            name = fl_mixer.delete_effect(track, slot)
+    except fl_mixer.MixerError as e:
+        return {"error": str(e)}
+    except Exception as e:  # e.g. Windows refusing a call: a tool answers, it doesn't raise
+        fl_windows.close_popup_menus()
+        return {"error": f"The mixer could not be driven: {e!r}"}
+    return {"track": track, "slot": slot, "deleted": name}
 
 
 def register_browser_tools(mcp: FastMCP) -> None:
@@ -358,7 +443,9 @@ def register_browser_tools(mcp: FastMCP) -> None:
         return {"refreshed": True}
 
     @mcp.tool()
-    def fl_browser_search(query: str, folder: str = "", limit: int = 40) -> dict:
+    def fl_browser_search(query: str = "", folder: str = "", limit: int = 40,
+                          bpm: float | None = None, key: str | None = None,
+                          bpm_tolerance: float = 1.0, relative_key: bool = False) -> dict:
         """Find sounds by name in FL Studio's browser: samples and presets, in any folder.
 
         Much faster than listing folders one by one. Searches the folders the
@@ -372,8 +459,15 @@ def register_browser_tools(mcp: FastMCP) -> None:
                 "kick 909", "sytrus pad dark", "riser noise".
             folder: Only search below this browser folder, e.g. "Packs/Drums".
             limit: How many paths to return at most.
+            bpm: Only files whose name gives this tempo ("128bpm", "BPM 140"),
+                within bpm_tolerance. A name without "bpm" next to a number has none.
+            key: Only files whose name gives this key ("Am", "F#m", "Eb"); a name
+                with a key but no mode ("040 F") matches either mode.
+            relative_key: Let the relative major/minor match too (Am finds C).
+            With bpm or key, query may be empty.
 
-        Returns {"matches": [browser paths, best first], "total"} or {"error"}.
+        Returns {"matches": [browser paths, best first], "total"} or {"error"};
+        with bpm or key also "tags": {path: {"bpm", "key"}} read from the names.
         The paths go straight into fl_load_in_new_channel, fl_load_in_channel
         and fl_add_effect.
         """
@@ -384,11 +478,14 @@ def register_browser_tools(mcp: FastMCP) -> None:
         except Exception:  # not on Windows, or FL isn't running: the user's folders remain
             install_dir = None
         try:
+            keep = sample_tags.matcher(bpm, key, bpm_tolerance, relative_key)
             roots = browser_index.browser_roots(install_dir, get_fl_settings_dir().parent)
-            matches, total = browser_index.search(roots, query, folder, limit)
+            matches, total = browser_index.search(roots, query, folder, limit, keep)
         except (ValueError, OSError) as e:
             return {"error": str(e)}
         result: dict = {"matches": matches, "total": total}
+        if keep is not None:
+            result["tags"] = {path: sample_tags.tags(path) for path in matches}
         if install_dir is None:
             result["warning"] = (
                 "FL Studio's own folders were not searched: it must be running (on "
@@ -452,15 +549,7 @@ def register_browser_tools(mcp: FastMCP) -> None:
 
         Returns {"track", "slot", "deleted": plugin name} or {"error"}.
         """
-        try:
-            with keyboard_lock:
-                name = fl_mixer.delete_effect(track, slot)
-        except fl_mixer.MixerError as e:
-            return {"error": str(e)}
-        except Exception as e:  # e.g. Windows refusing a call: a tool answers, it doesn't raise
-            fl_windows.close_popup_menus()
-            return {"error": f"The mixer could not be driven: {e!r}"}
-        return {"track": track, "slot": slot, "deleted": name}
+        return delete_effect(track, slot)
 
     @mcp.tool()
     def fl_add_effect(path: str, track: int) -> dict:
@@ -476,9 +565,15 @@ def register_browser_tools(mcp: FastMCP) -> None:
                 under "Plugin presets/Effects".
             track: Mixer track number (0 is the master).
 
-        Returns {"track", "slot", "plugin", "effects"} or {"error": ...}.
+        Returns {"track", "slot", "plugin", "effects"} or {"error": ...}. With FL
+        started by fl_launch, a plugin from the plugin database is added by FL's own
+        tools (no browser walk; "via" says so).
         """
-        return run_load(add_effect, path, track)
+        plugin = _native_plugin(path)
+        if plugin is None or not _is_effect(path):
+            return run_load(add_effect, path, track)
+        return run_load_natively(lambda: run_load(add_effect_natively, plugin, track),
+                                 lambda: run_load(add_effect, path, track))
 
     @mcp.tool()
     def fl_get_track_effects(track: int) -> dict:
@@ -535,9 +630,11 @@ def register_browser_tools(mcp: FastMCP) -> None:
     def fl_undo(steps: int = 1) -> dict:
         """Undo the last changes in FL Studio, like Ctrl+Alt+Z.
 
-        This is the way to take back a channel or effect that was just added:
-        the API can't delete them. Check the result afterwards (for example
-        with fl_get_all_channels): FL decides what counts as one step.
+        Check the result afterwards (for example with fl_get_all_channels): FL
+        decides what counts as one step. A channel or effect added by FL's own
+        tools (a result with "via") isn't one step (seen live: one undo turned a
+        new Morphine channel into an empty Sampler, the next undid something
+        older), so take those back with fl_delete_channels / fl_delete_effect.
 
         Args:
             steps: How many steps to go back (1-50).

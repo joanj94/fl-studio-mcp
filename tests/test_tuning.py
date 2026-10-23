@@ -250,3 +250,63 @@ def test_a_lost_connection_while_writing_the_note_is_an_error(tools, project, mo
 
     assert tools["fl_measure_pitch"](1) == {"error": "MIDI port closed"}
     assert project.pattern == 2  # the clean-up after it still ran
+
+
+# --- fl_kick_lab -----------------------------------------------------------------------
+
+
+def _kick(midi: float, click: bool = True, seconds: float = 0.6) -> np.ndarray:
+    """A sine kick sweeping down onto the note, with a 2 ms click if asked."""
+    t = np.arange(int(seconds * RATE)) / RATE
+    hz = hz_of(midi) * (1 + 3 * np.exp(-t * 40))
+    body = np.sin(2 * np.pi * np.cumsum(hz) / RATE) * np.exp(-t * 6)
+    if click:
+        body[: int(0.002 * RATE)] += 1.0
+    return 0.45 * body
+
+
+def test_a_kick_profile_shows_punch_bands_tone_and_tail():
+    from fl_studio_mcp.audio.kick import kick_profile
+
+    hard = kick_profile(_kick(33), RATE)  # A1, 55 Hz
+    soft = kick_profile(_kick(33, click=False), RATE)
+
+    assert hard["punch_db"] > soft["punch_db"] + 3
+    assert hard["tone"]["note"] == "A1"  # the sweep settles on the note
+    assert hard["bands_percent"]["sub"] + hard["bands_percent"]["thump"] > 80
+    assert 0.4 < hard["tail_seconds"] <= 0.6
+    assert kick_profile(np.zeros(1000), RATE) is None
+
+
+def test_silence_before_the_hit_is_skipped():
+    from fl_studio_mcp.audio.kick import kick_profile
+
+    late = np.concatenate([np.zeros(RATE // 10), _kick(33)])
+    assert kick_profile(late, RATE) == kick_profile(_kick(33), RATE)
+
+
+def test_kick_lab_measures_one_hit_and_leaves_nothing(tools, project, monkeypatch):
+    rendered = _channel_sounds(monkeypatch, project, lambda midi: _kick(midi - 60 + 33))
+
+    result = tools["fl_kick_lab"]("kick")
+
+    assert result["sent"] == "C4" and result["channel"] == 0
+    assert result["tone"]["note"] == "A1" and "sample" not in result
+    assert project.rolls[(0, 3)] == []  # the test note is gone
+    assert not rendered[0].exists()
+
+
+def test_kick_lab_keeps_the_hit_as_a_sample(tools, project, monkeypatch, settings_dir):
+    _channel_sounds(monkeypatch, project, lambda midi: _kick(midi - 60 + 33))
+
+    result = tools["fl_kick_lab"]("kick", keep=True, name="Hard/kick")
+
+    sample = Path(result["sample"]["path"])
+    assert sample.is_file() and sample.name.startswith("Hardkick ")
+    assert sample.parent == settings_dir.parent / tuning.KICK_FOLDER
+    assert result["sample"]["browser_path"] == f"{tuning.KICK_BROWSER_FOLDER}/{sample.name}"
+
+
+def test_kick_lab_refuses_a_bad_note(tools, project):
+    assert "error" in tools["fl_kick_lab"]("kick", note="H9")
+    assert "error" in tools["fl_kick_lab"]("kick", beats=0)

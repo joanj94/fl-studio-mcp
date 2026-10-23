@@ -64,6 +64,12 @@ STATE_FILE = os.path.join(get_script_dir(), "piano_roll_state.json")
 
 def export_piano_roll_state():
     """Export current piano roll state to JSON file"""
+    write_json(STATE_FILE, piano_roll_state())
+    return STATE_FILE
+
+
+def piano_roll_state():
+    """The piano roll's notes in the exported format (times in quarter notes)."""
     notes_data = []
     ppq = flp.score.PPQ
 
@@ -89,17 +95,11 @@ def export_piano_roll_state():
             "muted": note.muted,
         })
 
-    # Export metadata
-    export_data = {
+    return {
         "ppq": ppq,
         "noteCount": flp.score.noteCount,
         "notes": notes_data
     }
-
-    # Save to file
-    write_json(STATE_FILE, export_data)
-
-    return STATE_FILE
 
 
 # Fields every note must carry, per action. Checked for the whole batch before
@@ -159,44 +159,12 @@ def process_mcp_request():
             r.get("id") for r in requests if isinstance(r, dict) and r.get("id")
         ]
 
-        for request in requests:
-            validate_request(request)
-
-        # Process all requests in order
-        total_notes = 0
-        notes_deleted = 0
-
-        for request in requests:
-            action = request.get("action")
-
-            if action == "clear":
-                # Clear all notes
-                count = flp.score.noteCount
-                for i in range(count - 1, -1, -1):
-                    flp.score.deleteNote(i)
-                notes_deleted += count
-            elif action == "read":
-                pass  # Nothing to change; the state is exported after every run.
-            elif action in NOTE_HANDLERS:
-                result = NOTE_HANDLERS[action](request)
-                if result.get("status") != "success":
-                    # Fails the whole batch so the server hears about it.
-                    raise RuntimeError("%s failed: %s" % (action, result.get("message")))
-                total_notes += result.get("notes_added", 0)
-                notes_deleted += result.get("notes_deleted", 0)
-            else:
-                raise ValueError("Unknown piano roll action %r" % action)
+        result = process_requests(requests)
 
         # Clear the request queue after processing
         write_json(REQUEST_FILE, [])
 
-        return {
-            "status": "success",
-            "requests_processed": len(requests),
-            "request_ids": request_ids,
-            "notes_added": total_notes,
-            "notes_deleted": notes_deleted
-        }
+        return result
 
     except Exception as e:
         # Drop the batch so a failing request isn't replayed (and partially
@@ -206,6 +174,48 @@ def process_mcp_request():
         except Exception:
             pass  # The error response below is what matters.
         return {"status": "error", "message": str(e), "request_ids": request_ids}
+
+
+def process_requests(requests):
+    """Validate the whole batch, then apply it in order; raises if anything fails.
+
+    No files are touched, so the server can also send this code through FL's own
+    script runner (see fl_studio_mcp.utils.gopher), where file writes fail.
+    """
+    for request in requests:
+        validate_request(request)
+
+    total_notes = 0
+    notes_deleted = 0
+
+    for request in requests:
+        action = request.get("action")
+
+        if action == "clear":
+            # Clear all notes
+            count = flp.score.noteCount
+            for i in range(count - 1, -1, -1):
+                flp.score.deleteNote(i)
+            notes_deleted += count
+        elif action == "read":
+            pass  # Nothing to change; the state is exported after every run.
+        elif action in NOTE_HANDLERS:
+            result = NOTE_HANDLERS[action](request)
+            if result.get("status") != "success":
+                # Fails the whole batch so the server hears about it.
+                raise RuntimeError("%s failed: %s" % (action, result.get("message")))
+            total_notes += result.get("notes_added", 0)
+            notes_deleted += result.get("notes_deleted", 0)
+        else:
+            raise ValueError("Unknown piano roll action %r" % action)
+
+    return {
+        "status": "success",
+        "requests_processed": len(requests),
+        "request_ids": [r.get("id") for r in requests if r.get("id")],
+        "notes_added": total_notes,
+        "notes_deleted": notes_deleted
+    }
 
 
 # Optional flpianoroll.Note fields copied as-is when a note request includes them.

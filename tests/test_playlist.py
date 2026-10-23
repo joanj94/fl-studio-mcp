@@ -427,3 +427,15 @@ def test_single_clip_mistakes_are_refused(tools, fl):
     assert "empty or doesn't exist" in tools["fl_add_clip"](pattern=9, track=1, bar=6)["error"]
     assert "bar must be 1 or more" in tools["fl_delete_clip"](track=1, bar=0)["error"]
     assert fl.clips == EXPECTED
+
+
+def test_the_ruler_is_clicked_below_the_scroll_bar_when_it_is_known():
+    from fl_studio_mcp.utils.fl_playlist import RULER_ABOVE_GRID, RULER_INSET, _ruler_y
+    from fl_studio_mcp.utils.fl_windows import PlaylistPanel
+
+    known = PlaylistPanel(hwnd=1, header_left=0, grid_left=100, grid_top=69, grid_bottom=600,
+                          ruler_top=49)
+    unknown = PlaylistPanel(hwnd=1, header_left=0, grid_left=100, grid_top=69, grid_bottom=600)
+
+    assert _ruler_y(known) == 49 + RULER_INSET
+    assert _ruler_y(unknown) == 69 - RULER_ABOVE_GRID

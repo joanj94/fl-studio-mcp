@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fl_studio_mcp.music.model import DEFAULT_VELOCITY
+from fl_studio_mcp.utils import gopher
 from fl_studio_mcp.utils.connection import call
 from fl_studio_mcp.utils.fl_trigger import get_trigger
 from fl_studio_mcp.utils.paths import atomic_write_json, get_piano_roll_scripts_dir
@@ -52,6 +53,8 @@ MAX_FINE_PITCH_CENTS = 1200
 
 # Serializes read-modify-write of the request queue within this process.
 _queue_lock = threading.Lock()
+# One run through FL's own script runner at a time: a run takes the whole queue.
+_run_lock = threading.Lock()
 
 
 def _get_fl_scripts_dir() -> Path:
@@ -161,16 +164,79 @@ def _describe_response(response: dict) -> str:
     )
 
 
+def _added_notes(requests: list[dict]) -> int:
+    return sum(len(r.get("notes", [])) for r in requests
+               if r.get("action") in ("add_notes", "add_chord"))
+
+
+def _run_in_fl(request_ids: list[str]) -> tuple[dict | None, str] | None:
+    """Run the queued requests with FL's own script runner (utils/gopher.py), ~0.15 s.
+
+    The installed ComposeWithLLM script's code is sent with the queue baked in: one run
+    counts the notes, one applies the batch (FL discards a run that raises, so a bad
+    batch changes nothing), one reads the state back, which is exported here as the
+    script would. None when FL's runner can't be reached: the menu is used instead.
+    """
+    if not request_ids or gopher.reachable() is None:
+        return None
+    with _run_lock:
+        return _run_queue_in_fl()
+
+
+def _run_queue_in_fl() -> tuple[dict | None, str] | None:
+    try:
+        script = (_get_fl_scripts_dir() / "ComposeWithLLM.pyscript").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    with _queue_lock:
+        queue = _read_queue()
+        try:
+            before = gopher.run_piano_roll_python("import flpianoroll as flp",
+                                                  returns="flp.score.noteCount")
+        except gopher.GopherError:
+            return None  # nothing sent yet: the menu can still do it
+        atomic_write_json(_get_request_file(), [])
+    ids = [r.get("id") for r in queue if isinstance(r, dict) and r.get("id")]
+    batch = (f"\n_REQUESTS = json.loads({json.dumps(json.dumps(queue))})\n"
+             "process_requests(_REQUESTS)\n")
+    try:
+        gopher.run_piano_roll_python(script + batch)
+    except gopher.GopherError as e:
+        # As the script does, a failing batch is dropped, not left to be replayed.
+        if not isinstance(e, gopher.ToolError):
+            return None, (" Warning: the requests were sent to FL Studio but its answer was "
+                          f"lost ({e}); check with fl_get_piano_roll_state.")
+        response = {"status": "error", "message": str(e).strip().splitlines()[-1],
+                    "request_ids": ids}
+        return response, _describe_response(response)
+    try:
+        state = gopher.run_piano_roll_python(script, returns="piano_roll_state()")
+    except gopher.GopherError as e:
+        return None, (" Warning: the requests were applied in FL Studio but reading the "
+                      f"piano roll back failed ({e}); check with fl_get_piano_roll_state.")
+    atomic_write_json(_get_state_file(), state)
+    added = _added_notes(queue)
+    response = {
+        "status": "success", "requests_processed": len(queue), "request_ids": ids,
+        "notes_added": added, "notes_deleted": before + added - state.get("noteCount", 0),
+    }
+    return response, _describe_response(response)
+
+
 def _trigger(request_ids: list[str]) -> tuple[dict | None, str]:
     """Run the piano roll script and wait for it to confirm request_ids.
 
-    On Windows the script is run from the piano roll's menu, which needs no
-    focus. Where that isn't possible, FL is brought to the front and sent the
-    "run last script again" shortcut, which only works once the script has been
-    run from the menu in that FL session.
+    FL's own script runner is used when FL was started with its debugging port
+    (`_run_in_fl`). Otherwise, on Windows the script is run from the piano roll's
+    menu, which needs no focus. Where that isn't possible, FL is brought to the
+    front and sent the "run last script again" shortcut, which only works once the
+    script has been run from the menu in that FL session.
 
     Returns FL's response (None if there is none) and a message for the AI.
     """
+    direct = _run_in_fl(request_ids)
+    if direct is not None:
+        return direct
     trigger = get_trigger()
     ran_from_menu = run_script_from_menu()
     if not ran_from_menu:

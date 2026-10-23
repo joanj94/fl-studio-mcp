@@ -8,6 +8,17 @@
 #
 # Run from PowerShell:  Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force  # once
 #                       .\install.ps1
+#                       .\install.ps1 -Stems auto   # also stem separation (Demucs): the
+#                                                   # GPU build with an NVIDIA card, else CPU
+#                       (-Stems gpu / cpu choose; leaving -Stems out removes it again)
+#                       .\install.ps1 -AssistantPort  # FL's own assistant tools however FL
+#                                                     # is started (asks for admin rights)
+
+param(
+    [ValidateSet("none", "auto", "gpu", "cpu")]
+    [string]$Stems = "none",
+    [switch]$AssistantPort
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -47,7 +58,16 @@ Write-Host ""
 Write-Color "[2/5] Installing Python dependencies (Python 3.12)..." "Yellow"
 & uv python install 3.12
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-& uv sync --python 3.12
+$SyncArgs = @("sync", "--python", "3.12")
+if ($Stems -eq "auto") {
+    $Stems = if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) { "gpu" } else { "cpu" }
+}
+if ($Stems -eq "gpu") { $SyncArgs += @("--extra", "stems-gpu") }
+if ($Stems -eq "cpu") { $SyncArgs += @("--extra", "stems") }
+if ($Stems -ne "none") {
+    Write-Host "Stem separation: $Stems build of torch (about 2.5 GB for gpu, 300 MB for cpu)"
+}
+& uv @SyncArgs
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Color "[OK] Dependencies installed" "Green"
 
@@ -106,6 +126,10 @@ if (Test-Path -LiteralPath $PianoDest) {
     Write-Color "[OK] Piano Roll script installed" "Green"
 } else {
     Write-Color "! Piano Roll script missing at FL Studio path" "Yellow"
+}
+if ($AssistantPort) {
+    & (Join-Path $ScriptDir "scripts\enable_fl_assistant_port.ps1")
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
 # Step 5: Configure Claude

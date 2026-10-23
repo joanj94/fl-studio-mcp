@@ -35,6 +35,21 @@ dependencies = [
 analysis = [
     "numpy>=1.26",
 ]
+# Stem separation (audio_separate_stems, Demucs). "stems" takes torch from PyPI: CPU
+# only on Windows and macOS. "stems-gpu" takes it from PyTorch's CUDA 12.6 index
+# (NVIDIA cards from the GTX 900 series on). Choose one of the two.
+stems = [
+    "numpy>=1.26",
+    "demucs>=4.1",
+    # Demucs keeps torch below 2.3 on Intel Macs only; without this the lock took
+    # 2.2.2 everywhere.
+    "torch>=2.5; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+]
+stems-gpu = [
+    "numpy>=1.26",
+    "demucs>=4.1",
+    "torch>=2.1",
+]
 dev = [
     "fl-studio-api-stubs>=37.0",
     "pytest>=8.0",
@@ -52,6 +67,15 @@ packages = ["src/fl_studio_mcp"]
 # back to a source build (needs Rust + OpenSSL). 48.x still has universal2
 # wheels and satisfies joserfc's cryptography>=45.0.1 requirement.
 constraint-dependencies = ["cryptography<49"]
+conflicts = [[{ extra = "stems" }, { extra = "stems-gpu" }]]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu126", extra = "stems-gpu", marker = "sys_platform != 'darwin'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
 
 [dependency-groups]
 dev = [

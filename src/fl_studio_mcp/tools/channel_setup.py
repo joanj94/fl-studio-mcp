@@ -11,8 +11,13 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from fl_studio_mcp.tools.browser import open_in_new_channel, run_load
-from fl_studio_mcp.utils import fl_channel_rack
+from fl_studio_mcp.tools.browser import (
+    add_channel_natively,
+    open_in_new_channel,
+    run_load,
+    run_load_natively,
+)
+from fl_studio_mcp.utils import fl_assistant, fl_channel_rack
 from fl_studio_mcp.utils.connection import call
 from fl_studio_mcp.utils.fl_channel_rack import ChannelRackError
 from fl_studio_mcp.utils.fl_trigger import keyboard_lock
@@ -25,6 +30,49 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 GENERATORS_FOLDER = "Plugin database/Generators"
+
+
+def _delete_natively(indexes: list[int]) -> int | None:
+    """Delete with FL's own remove_channels; None when that can't be used (nothing changed).
+
+    Raises ChannelRackError when FL removed other channels than asked.
+    """
+    if not fl_assistant.available():
+        return None
+    try:
+        return fl_assistant.delete_channels(indexes)
+    except fl_assistant.UnexpectedChange as e:
+        raise ChannelRackError(str(e)) from e
+    except fl_assistant.AssistantError as e:
+        logger.info("FL's own tools failed (%s); using the channel rack's menu", e)
+        return None
+
+
+def delete_channels(channels: list[int | str]) -> dict:
+    """fl_delete_channels' work (also used by fl_clean_unused)."""
+    try:
+        indexes = sorted({resolve_channel(channel) for channel in channels})
+        if not indexes:
+            return {"error": "Give at least one channel to delete"}
+        with keyboard_lock:
+            rack = call("channels.getAll")
+            if "error" in rack:
+                return rack
+            names = {c["index"]: c["name"] for c in rack["channels"]}
+            unknown = [index for index in indexes if index not in names]
+            if unknown:
+                return {"error": f"No channel at index {unknown[0]}"}
+            if len(indexes) == len(names):
+                return {"error": "FL Studio keeps at least one channel: leave one out"}
+            remaining = _delete_natively(indexes)
+            if remaining is None:
+                remaining = fl_channel_rack.delete_channels(indexes)
+    except (ValueError, ChannelRackError) as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.exception("Deleting channels failed")
+        return {"error": f"Could not delete the channels: {e}"}
+    return {"deleted": [names[index] for index in indexes], "remaining": remaining}
 
 
 def register_channel_setup_tools(mcp: FastMCP) -> None:
@@ -68,12 +116,17 @@ def register_channel_setup_tools(mcp: FastMCP) -> None:
             category = list_generators()[generator]
         except ValueError as e:
             return {"error": str(e)}
-        added = run_load(open_in_new_channel, f"{GENERATORS_FOLDER}/{category}/{generator}", name)
+        added = run_load_natively(
+            lambda: run_load(add_channel_natively, generator, name),
+            lambda: run_load(open_in_new_channel, f"{GENERATORS_FOLDER}/{category}/{generator}",
+                             name),
+        )
         if "error" in added:
             return added
         result = {"index": added["index"], "name": added["name"], "plugin": generator}
-        if "warning" in added:
-            result["warning"] = added["warning"]
+        for key in ("warning", "via"):
+            if key in added:
+                result[key] = added[key]
         return result
 
     @mcp.tool()
@@ -90,27 +143,7 @@ def register_channel_setup_tools(mcp: FastMCP) -> None:
 
         Returns {"deleted": [names], "remaining": channel count} or {"error": ...}.
         """
-        try:
-            indexes = sorted({resolve_channel(channel) for channel in channels})
-            if not indexes:
-                return {"error": "Give at least one channel to delete"}
-            with keyboard_lock:
-                rack = call("channels.getAll")
-                if "error" in rack:
-                    return rack
-                names = {c["index"]: c["name"] for c in rack["channels"]}
-                unknown = [index for index in indexes if index not in names]
-                if unknown:
-                    return {"error": f"No channel at index {unknown[0]}"}
-                if len(indexes) == len(names):
-                    return {"error": "FL Studio keeps at least one channel: leave one out"}
-                remaining = fl_channel_rack.delete_channels(indexes)
-        except (ValueError, ChannelRackError) as e:
-            return {"error": str(e)}
-        except Exception as e:
-            logger.exception("Deleting channels failed")
-            return {"error": f"Could not delete the channels: {e}"}
-        return {"deleted": [names[index] for index in indexes], "remaining": remaining}
+        return delete_channels(channels)
 
     @mcp.tool()
     def fl_set_cut_itself(channel: int | str, enabled: bool = True) -> dict:

@@ -11,7 +11,21 @@
 #   5. ComposeWithLLM piano roll script
 #   6. Claude Desktop/Code MCP configuration
 
+# Usage: ./install.sh [--stems[=auto|gpu|cpu]]
+#   --stems also installs stem separation (Demucs): the GPU build of torch with an
+#   NVIDIA card (auto, the default for --stems), else the CPU build. Leaving it out
+#   removes it again.
+
 set -e
+
+STEMS=none
+for arg in "$@"; do
+    case "$arg" in
+        --stems) STEMS=auto ;;
+        --stems=auto|--stems=gpu|--stems=cpu) STEMS="${arg#--stems=}" ;;
+        *) echo "Unknown option $arg (only --stems[=auto|gpu|cpu])"; exit 1 ;;
+    esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -48,7 +62,14 @@ echo -e "${GREEN}✓${NC} uv is installed"
 echo ""
 echo -e "${YELLOW}[2/5]${NC} Installing Python dependencies (Python 3.12)..."
 uv python install 3.12
-uv sync --python 3.12
+SYNC_ARGS=(sync --python 3.12)
+if [ "$STEMS" = auto ]; then
+    if command -v nvidia-smi &> /dev/null; then STEMS=gpu; else STEMS=cpu; fi
+fi
+if [ "$STEMS" = gpu ]; then SYNC_ARGS+=(--extra stems-gpu); fi
+if [ "$STEMS" = cpu ]; then SYNC_ARGS+=(--extra stems); fi
+if [ "$STEMS" != none ]; then echo "Stem separation: $STEMS build of torch"; fi
+uv "${SYNC_ARGS[@]}"
 echo -e "${GREEN}✓${NC} Dependencies installed"
 
 # Step 3: Set up virtual MIDI and FL Studio controller

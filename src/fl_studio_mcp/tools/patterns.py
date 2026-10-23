@@ -93,3 +93,22 @@ def register_pattern_tools(mcp: FastMCP) -> None:
         Returns {"markers": [{"index", "name"}, ...]}.
         """
         return call("arrangement.getMarkers")
+
+    @mcp.tool()
+    def fl_set_pattern_color(pattern: int, color: str) -> dict:
+        """Colour a pattern; its clips in the playlist show the colour.
+
+        Args:
+            pattern: Pattern index (1-based).
+            color: A colour name ("red", "teal", ...) or hex ("#FF8000").
+
+        Returns {"index", "color"} as read back, or {"error"}.
+        """
+        from fl_studio_mcp.utils.colors import parse_color, rgb
+
+        try:
+            red, green, blue = rgb(parse_color(color))
+        except ValueError as e:
+            return {"error": str(e)}
+        return call("patterns.setColor",
+                    {"index": pattern, "red": red, "green": green, "blue": blue})

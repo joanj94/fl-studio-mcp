@@ -8,6 +8,7 @@ contributes; `audio_analyze` measures any WAV file and doesn't touch FL.
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -24,6 +25,9 @@ if TYPE_CHECKING:
 RENDER_DIR_ENV = "FL_MCP_RENDER_DIR"
 DEFAULT_RENDER_TIMEOUT = 300.0
 DEFAULT_WINDOW_SECONDS = 4.0
+# Inside "Project bones", which FL's browser shows.
+SLICE_FOLDER = Path("Projects") / "Project bones" / "FL-MCP slices"
+SLICE_BROWSER_FOLDER = "Project bones/FL-MCP slices"
 MISSING_NUMPY = (
     "Audio analysis needs numpy, which is an optional dependency: "
     "install it with `uv sync --extra analysis`."
@@ -187,11 +191,24 @@ def _put_back(action: str, params: dict) -> str | None:
 def register_audio_tools(mcp: FastMCP) -> None:
     """Register render and analysis tools with the MCP server."""
 
+    def _put_selection_back(before: dict) -> None:
+        """The playlist's time selection as it was before a render of some bars."""
+        try:
+            if before.get("active"):
+                call("arrangement.setSelection", {"start_bar": before["start_bar"],
+                                                  "end_bar": before["end_bar"]})
+            else:
+                call("arrangement.clearSelection")
+        except RuntimeError:
+            pass  # FL stopped answering: the render's own result says so
+
     @mcp.tool()
     def fl_render(
         path: str | None = None,
         analyze: bool = True,
         timeout: float = DEFAULT_RENDER_TIMEOUT,
+        start_bar: float | None = None,
+        end_bar: float | None = None,
     ) -> dict:
         """Render the project to a WAV or MP3 file and (a WAV, by default) measure it.
 
@@ -209,6 +226,10 @@ def register_audio_tools(mcp: FastMCP) -> None:
                 Default: a new .wav in the render folder.
             analyze: Also return the measurements audio_analyze gives (WAV only).
             timeout: Seconds to wait for the render to finish.
+            start_bar, end_bar: Render only these bars of the song (end_bar not
+                included), e.g. 33 and 49 for a drop. Song mode only; FL renders the
+                playlist's time selection, which is set for the render and cleared
+                after it.
 
         Returns {"path", "mode", "render_seconds", "analysis"?} or {"error": ...}.
         """
@@ -217,11 +238,27 @@ def register_audio_tools(mcp: FastMCP) -> None:
         if suffix not in EXPORT_ENTRIES:
             return {"error": f"The render path must end in .wav or .mp3, got {target.name!r}"}
         mode = call("transport.getStatus").get("loop_mode")
+        bars = (start_bar, end_bar)
+        if bars != (None, None):
+            if None in bars:
+                return {"error": "Give both start_bar and end_bar, or neither"}
+            if mode != "song":
+                return {"error": "Rendering some bars needs song mode (fl_set_loop_mode)"}
+            before = call("arrangement.getSelection")
+            selected = call("arrangement.setSelection",
+                            {"start_bar": start_bar, "end_bar": end_bar})
+            if "error" in selected:
+                return selected
         try:
             seconds = render_audio(target.resolve(), timeout)
         except RenderError as e:
             return {"error": str(e)}
+        finally:
+            if bars != (None, None):
+                _put_selection_back(before)
         result = {"path": str(target.resolve()), "mode": mode, "render_seconds": round(seconds, 1)}
+        if bars != (None, None):
+            result["bars"] = [start_bar, end_bar]
         if analyze and suffix == ".wav":
             result["analysis"] = analyze_file(target, DEFAULT_WINDOW_SECONDS)
         return result
@@ -329,6 +366,158 @@ def register_audio_tools(mcp: FastMCP) -> None:
         return compare(mix, ref)
 
     @mcp.tool()
+    def audio_compare_sections(path: str, reference: str, bars: int = 4,
+                               bpm: float | None = None,
+                               reference_bpm: float | None = None) -> dict:
+        """Compare a mix with a reference section by section: drops with drops, breaks
+        with breaks.
+
+        Each song is cut into sections of `bars` bars at its own tempo (from the
+        song's start), and each section is measured: loudness, and the share of
+        energy per band. Sections within 3 LU of the song's loud parts count as
+        "full", 6 LU or more below as "quiet". Then the mix's full sections are
+        compared with the reference's full ones and its quiet with its quiet, so the
+        songs needn't be as long or laid out alike. Also: how long the quiet runs
+        last and how much louder full is than quiet. It tells where they differ,
+        not which is right. Any format audio_analyze reads.
+
+        Args:
+            path: The mix (render it with fl_render first).
+            reference: The reference track.
+            bars: Bars per section (4/4 assumed).
+            bpm, reference_bpm: The tempos; estimated when left out (check them: a
+                beat with off-beats can read at half or double tempo).
+
+        Returns {"mix": {"bpm", "sections": [{"bar", "start", "lufs", "kind",
+        "below_loud_lu"}]}, "reference": {...}, "full": {"mix_bands",
+        "reference_bands", "difference_db"}, "quiet": {...}, "quiet_runs_bars",
+        "full_over_quiet_lu", "largest_differences"} or {"error"}.
+        """
+        try:
+            from fl_studio_mcp.audio.decode import load_audio
+            from fl_studio_mcp.audio.sections import classify, compare_sections, sections
+            from fl_studio_mcp.audio.tempo import estimate_tempo
+        except ImportError:
+            return {"error": MISSING_NUMPY}
+        songs = {}
+        try:
+            for name, file, given in (("mix", path, bpm), ("reference", reference,
+                                                           reference_bpm)):
+                samples, rate = load_audio(Path(file))
+                tempo = given
+                if tempo is None:
+                    estimate = estimate_tempo(samples.mean(axis=1) if samples.ndim == 2
+                                              else samples, rate)
+                    if estimate is None:
+                        return {"error": f"No tempo could be heard in {file}: give it"}
+                    tempo = estimate["bpm"]
+                found = classify(sections(samples, rate, tempo, bars))
+                songs[name] = {"bpm": tempo, "found": found}
+        except (OSError, ValueError) as e:
+            return {"error": f"Could not compare {path} and {reference}: {e}"}
+        except MemoryError:
+            return {"error": "Not enough memory to compare files this long"}
+        result = {name: {"bpm": song["bpm"], "sections": [
+            {k: v for k, v in s.items() if k != "bands"} for s in song["found"]]}
+            for name, song in songs.items()}
+        result.update(compare_sections(songs["mix"]["found"], songs["reference"]["found"],
+                                       bars))
+        return result
+
+    @mcp.tool()
+    def audio_qc(path: str) -> dict:
+        """Technical checks of a render before it goes out. Changes nothing.
+
+        DC offset, true peak (between samples, 4x oversampled; over -1 dBTP an
+        MP3 or streaming encode can clip), clicks (sudden jumps such as a cut
+        sample leaves; sharp drum hits can read as clicks too, so listen at the
+        times), dropouts (digital silence inside the audio), out-of-phase
+        seconds and how much quieter the mono sum is. Render with fl_render
+        first, or give any audio file.
+
+        Returns {"problems": [in words], "dc_offset", "true_peak_dbtp", "clicks"
+        (seconds), "click_count", "dropouts": [{"start", "seconds"}], "phase":
+        {"out_of_phase_at", "out_of_phase_windows", "mono_loss_db"}} or {"error"}.
+        """
+        try:
+            from fl_studio_mcp.audio.decode import load_audio
+            from fl_studio_mcp.audio.qc import check
+        except ImportError:
+            return {"error": MISSING_NUMPY}
+        try:
+            samples, rate = load_audio(Path(path))
+            return check(samples, rate)
+        except MemoryError:
+            return {"error": f"Not enough memory to check {path}"}
+        except (OSError, ValueError) as e:
+            return {"error": f"Could not check {path}: {e}"}
+
+    @mcp.tool()
+    def audio_match_eq(path: str, reference: str, max_bands: int = 4,
+                       strength: float = 0.7) -> dict:
+        """EQ moves that bring a mix's tonal balance toward a reference track.
+
+        Compares the two files' long-term spectra in third-octave bands, with
+        their overall levels evened out, and turns the largest differences
+        (smoothed over an octave, at least 1.5 dB) into EQ bands, at `strength`
+        of the difference and at most 6 dB each. A reference is another song:
+        check the moves by ear. fl_match_eq renders the mix and can set them.
+
+        Args:
+            path: The mix (fl_render's file, or any audio file).
+            reference: The track to match.
+            max_bands: EQ bands to propose at most (1-7).
+            strength: Share of each difference to correct (0-1].
+
+        Returns {"bands": [{"hz", "gain_db", "type"}], "curve": [{"hz",
+        "difference_db"}] (reference minus mix)} or {"error"}.
+        """
+        try:
+            from fl_studio_mcp.audio.eq_match import match_files
+        except ImportError:
+            return {"error": MISSING_NUMPY}
+        try:
+            return match_files(Path(path), Path(reference), max_bands, strength)
+        except MemoryError:
+            return {"error": "Not enough memory to compare files this long"}
+        except (OSError, ValueError) as e:
+            return {"error": f"Could not compare {path} and {reference}: {e}"}
+
+    @mcp.tool()
+    def audio_loop_tempo(path: str, beats_per_bar: int = 4) -> dict:
+        """The exact tempo of a loop, from its length: a loop is a whole number of bars.
+
+        A number in the file name that fits the length exactly ("SMPL_155_Loop"),
+        else the tempo in the name ("128bpm") or the one heard in it, picks how many
+        bars it holds; the length then gives the tempo to two decimals.
+        Set the project to it (fl_set_tempo) so the loop plays as it is, unstretched.
+        Not for whole songs or one-shots.
+
+        Returns {"seconds", "from_name", "estimated", "bars", "bpm", "candidates":
+        [{"bars", "bpm"}]} ("bars"/"bpm" null when nothing fits) or {"error"}.
+        """
+        try:
+            from fl_studio_mcp.audio.decode import load_audio
+            from fl_studio_mcp.audio.tempo import estimate_tempo, loop_tempo
+            from fl_studio_mcp.utils.sample_tags import parse_bpm
+        except ImportError:
+            return {"error": MISSING_NUMPY}
+        try:
+            samples, rate = load_audio(Path(path))
+            seconds = len(samples) / rate
+            heard = estimate_tempo(samples.mean(axis=1), rate)
+            named = parse_bpm(Path(path).stem)
+            guess = named or (heard and heard["bpm"])
+            numbers = tuple(float(n) for n in re.findall(r"\d+(?:\.\d+)?", Path(path).stem))
+            return {"seconds": round(seconds, 4), "from_name": named,
+                    "estimated": heard and heard["bpm"],
+                    **loop_tempo(seconds, guess, beats_per_bar, numbers=numbers)}
+        except MemoryError:
+            return {"error": f"Not enough memory to read {path}"}
+        except (OSError, ValueError) as e:
+            return {"error": f"Could not read {path}: {e}"}
+
+    @mcp.tool()
     def audio_extract_melody(path: str, bpm: float | None = None, grid: float = 0.25,
                              start_seconds: float = 0.0) -> dict:
         """Turn a recorded melody (one voice or instrument, one note at a time) into notes.
@@ -367,3 +556,186 @@ def register_audio_tools(mcp: FastMCP) -> None:
                              "file this long"}
         except (OSError, ValueError) as e:
             return {"error": f"Could not read a melody from {path}: {e}"}
+
+    @mcp.tool()
+    def audio_masking(path_a: str, path_b: str) -> dict:
+        """Where two parts compete for the same frequencies (they mask each other).
+
+        Render each part on its own first (fl_render_stems gives the files). A band
+        is listed when both parts are active in it and within 6 dB of each other for
+        at least a quarter of the time: neither stands out, so both blur there. It
+        says where, not which part should give way: cut the one that should sit
+        behind (fl_set_track_eq or an EQ effect) and check again.
+
+        Returns {"conflicts": [{"low_hz", "centre_hz", "high_hz", "share",
+        "louder" ("a"/"b"/"even"), "difference_db", "level_db"}], "frames"} or
+        {"error"}.
+        """
+        try:
+            from fl_studio_mcp.audio.decode import load_audio
+            from fl_studio_mcp.audio.masking import masking
+        except ImportError:
+            return {"error": MISSING_NUMPY}
+        try:
+            a, rate_a = load_audio(Path(path_a))
+            b, rate_b = load_audio(Path(path_b))
+            if rate_a != rate_b:
+                return {"error": f"The files have different sample rates ({rate_a} and "
+                                 f"{rate_b} Hz): render both the same way"}
+            return masking(a, b, rate_a)
+        except MemoryError:
+            return {"error": "Not enough memory to compare files this long"}
+        except (OSError, ValueError) as e:
+            return {"error": f"Could not compare {path_a} and {path_b}: {e}"}
+
+    @mcp.tool()
+    def audio_slice(path: str, sensitivity: float = 0.7, min_length: float = 0.05,
+                    max_slices: int = 64, folder: str | None = None) -> dict:
+        """Cut a sample or a vocal into slices at its onsets (hits, syllables, chops).
+
+        The sound itself isn't changed: every slice is a plain copy of its part of
+        the file, from one onset to the next, written as a WAV. By default they go to
+        the browser folder "Project bones/FL-MCP slices/<file name>" (fl_browser_refresh
+        then fl_load_in_new_channel loads one). Any format audio_analyze reads.
+
+        Args:
+            path: The audio file.
+            sensitivity: 0-1; higher keeps quieter onsets (more slices). Measured on
+                a 110 BPM drum loop: 0.5 cut it in beats, 0.7 in 8ths, 0.9 in 16ths.
+            min_length: Shortest slice in seconds; shorter ones join the one before.
+            max_slices: Refuse to write more than this many.
+            folder: Where to write them instead.
+
+        Returns {"folder", "browser_folder" (if under Project bones), "slices":
+        [{"file", "start", "end"}]} or {"error"}.
+        """
+        try:
+            from fl_studio_mcp.audio.decode import load_audio
+            from fl_studio_mcp.audio.slicing import find_onsets, slice_points
+            from fl_studio_mcp.audio.wav import write_wav
+        except ImportError:
+            return {"error": MISSING_NUMPY}
+        source = Path(path)
+        try:
+            samples, rate = load_audio(source)
+            onsets = find_onsets(samples.mean(axis=1), rate, sensitivity)
+            points = slice_points(onsets, len(samples) / rate, min_length)
+        except MemoryError:
+            return {"error": f"Not enough memory to slice {path}"}
+        except (OSError, ValueError) as e:
+            return {"error": f"Could not slice {path}: {e}"}
+        if not len(samples):
+            return {"error": f"{path} holds no audio"}
+        if len(points) > max_slices:
+            return {"error": f"{path} would make {len(points)} slices, more than max_slices "
+                             f"({max_slices}); lower the sensitivity or raise min_length"}
+        if folder is None:
+            from fl_studio_mcp.utils.paths import get_fl_settings_dir
+
+            target = (get_fl_settings_dir().parent / SLICE_FOLDER / source.stem)
+            browser_folder = f"{SLICE_BROWSER_FOLDER}/{source.stem}"
+        else:
+            target, browser_folder = Path(folder), None
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            if folder is None:  # our own folder: the slices of an earlier run go
+                for old in target.glob(f"{source.stem} [0-9][0-9].wav"):
+                    old.unlink()
+            slices = []
+            for number, (start, end) in enumerate(points, 1):
+                name = f"{source.stem} {number:02d}.wav"
+                stop = len(samples) if number == len(points) else round(end * rate)
+                write_wav(target / name, samples[round(start * rate):stop], rate)
+                slices.append({"file": name, "start": round(start, 4), "end": round(end, 4)})
+        except OSError as e:
+            return {"error": f"Could not write the slices to {target}: {e}"}
+        result: dict = {"folder": str(target), "slices": slices}
+        if browser_folder:
+            result["browser_folder"] = browser_folder
+        return result
+
+    @mcp.tool()
+    def audio_chords(path: str, bpm: float | None = None, beats_per_chord: float = 4.0,
+                     start_seconds: float = 0.0) -> dict:
+        """The chords of a recording over time, one per span of beats (a bar by default).
+
+        Each span's pitch content is matched to major and minor triads on every root:
+        a reading of a reference's harmony to write against, not an exact
+        transcription (drums and melodies sway it; "confidence" says how clearly a
+        chord won, "N" is a span without harmony). Set start_seconds to the first
+        downbeat so spans line up with bars. Any format audio_analyze reads.
+
+        Args:
+            path: The audio file.
+            bpm: Its tempo; default: estimated.
+            beats_per_chord: Span length in beats (4 = a bar of 4/4, 2 = half bars).
+            start_seconds: Where the first span starts.
+
+        Returns {"bpm", "chords": [{"time" (beats), "chord", "confidence"}],
+        "progression": the chords with repeats in a row merged} or {"error"}.
+        """
+        try:
+            from fl_studio_mcp.audio.chords import detect_chords
+            from fl_studio_mcp.audio.decode import load_audio
+            from fl_studio_mcp.audio.tempo import estimate_tempo
+        except ImportError:
+            return {"error": MISSING_NUMPY}
+        try:
+            samples, rate = load_audio(Path(path))
+            mono = samples.mean(axis=1)
+            if bpm is None:
+                found = estimate_tempo(mono, rate)
+                if found is None:
+                    return {"error": "The file is too short to tell its tempo: give bpm"}
+                bpm = found["bpm"]
+            chords = detect_chords(mono, rate, bpm, beats_per_chord, start_seconds)
+        except MemoryError:
+            return {"error": f"Not enough memory to read {path}"}
+        except (OSError, ValueError) as e:
+            return {"error": f"Could not read the chords of {path}: {e}"}
+        merged = [c["chord"] for i, c in enumerate(chords)
+                  if i == 0 or c["chord"] != chords[i - 1]["chord"]]
+        return {"bpm": bpm, "chords": chords, "progression": merged}
+
+    @mcp.tool()
+    def audio_drums(path: str, bpm: float | None = None, grid: float = 0.25,
+                    start_seconds: float = 0.0, sensitivity: float = 0.9) -> dict:
+        """Turn a drum loop into kick, snare and hat hits on a grid, and read its groove.
+
+        For learning a beat from a loop or a drum stem: "grids" are music_rhythm
+        patterns per drum, "notes" go into fl_send_notes (General MIDI: kick 36,
+        snare 38, hat 42; move them to your own channels' notes), and "groove" can be
+        put on other notes with music_transform [{"op": "groove", "template": ...,
+        "step": grid}]. Hits are sorted by where their energy lies (lows: kick, highs:
+        hat, the rest: snare), so claps and toms come out as snares. Seen on a
+        distorted drum loop: distortion spreads every hit over all frequencies, so
+        most came out as snares; use it on clean drums. A full mix confuses it.
+
+        Args:
+            path: The audio file (a loop or a drum stem).
+            bpm: Its tempo; default: estimated.
+            grid: Grid in beats the hits are put on (0.25 = 16ths).
+            start_seconds: Where beat 0 is in the file.
+            sensitivity: 0-1; higher keeps quieter hits.
+
+        Returns {"bpm", "grid", "hits", "notes", "grids", "groove"} or {"error"}.
+        """
+        try:
+            from fl_studio_mcp.audio.decode import load_audio
+            from fl_studio_mcp.audio.drums import transcribe_drums
+            from fl_studio_mcp.audio.tempo import estimate_tempo
+        except ImportError:
+            return {"error": MISSING_NUMPY}
+        try:
+            samples, rate = load_audio(Path(path))
+            mono = samples.mean(axis=1)
+            if bpm is None:
+                found = estimate_tempo(mono, rate)
+                if found is None:
+                    return {"error": "The file is too short to tell its tempo: give bpm"}
+                bpm = found["bpm"]
+            return transcribe_drums(mono, rate, bpm, grid, start_seconds, sensitivity)
+        except MemoryError:
+            return {"error": f"Not enough memory to read {path}"}
+        except (OSError, ValueError) as e:
+            return {"error": f"Could not read the drums of {path}: {e}"}

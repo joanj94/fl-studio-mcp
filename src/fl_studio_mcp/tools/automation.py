@@ -38,7 +38,7 @@ from fl_studio_mcp.utils.connection import call
 from fl_studio_mcp.utils.fl_automation import AutomationError, choose_automation_for_last_tweaked
 from fl_studio_mcp.utils.fl_browser import BrowserError
 from fl_studio_mcp.utils.fl_playlist import PlaylistError
-from fl_studio_mcp.utils.fl_save import SaveError, save_project
+from fl_studio_mcp.utils.fl_save import SaveError, save_new_project, save_project
 from fl_studio_mcp.utils.fl_trigger import keyboard_lock
 from fl_studio_mcp.utils.paths import get_fl_settings_dir
 from fl_studio_mcp.utils.roles import resolve_channel
@@ -402,25 +402,65 @@ def create_automation(load: Load, target: dict, start_bar: int, points: list[Poi
     }
 
 
+def automate(points: list[dict], mixer_track: int | None = None,
+             channel: int | str | None = None, parameter: str | int = "volume",
+             name: str | None = None, slot: int | None = None) -> dict:
+    """fl_create_automation's work (also used by fl_duck_track); {"error"} on failure."""
+    try:
+        target = _target(mixer_track, channel, parameter, slot)
+        beats_per_bar = call("project.getInfo").get("beats_per_bar", 4)
+        start_bar, converted = to_points(points, target["kind"], parameter, beats_per_bar)
+    except (ValueError, RuntimeError) as e:
+        return {"error": str(e)}
+    load = Load()
+    try:
+        with keyboard_lock:
+            result = create_automation(load, target, start_bar, converted, name,
+                                       beats_per_bar)
+    except (AutomationError, BrowserError, fl_channel_rack.ChannelRackError) as e:
+        fl_windows.close_popup_menus()
+        return {"error": " ".join(filter(None, [str(e), load.note()]))}
+    except Exception as e:  # e.g. Windows refusing a call: a tool answers, it doesn't raise
+        logger.exception("Creating automation failed unexpectedly")
+        fl_windows.close_popup_menus()
+        return {"error": f"Creating the automation failed: {e!r}."}
+    note = load.note()
+    if note:
+        result["warning"] = note
+    return result
+
+
 def register_automation_tools(mcp: FastMCP) -> None:
     """Register the automation tools with the MCP server."""
 
     @mcp.tool()
-    def fl_save_project() -> str:
+    def fl_save_project(name: str = "") -> str:
         """Save the open project (FL's File > Save) and confirm its file was written.
 
-        The project must have been saved once and live under FL's Projects
-        folder, where its file is found by FL's window title (a project without
-        a file would make FL open its Save As dialog, left for you to answer).
+        A project saved before goes to its own file, found by FL's window title
+        under FL's Projects folder. A new project (no file yet) needs `name`: FL's
+        Save as window is filled in and it goes to "Projects/<name>/<name>.flp".
         In the trial, the "Buy FL Studio" window that comes with saving is
         closed. Windows only.
+
+        Args:
+            name: Only for a project without a file: its name (no folders, no
+                slashes or : * ? " < > |). Never overwrites a project.
         """
         try:
             title = _fl_project_title()
-            project = find_saved_project(_user_dir() / PROJECTS_FOLDER, title) if title else None
+            projects = _user_dir() / PROJECTS_FOLDER
+            project = find_saved_project(projects, title) if title else None
+            if name:
+                if project is not None:
+                    return (f"Error: the project already has a file ({project}); save it "
+                            "without a name")
+                with keyboard_lock:
+                    saved = save_new_project(projects, name)
+                return f"Project saved to {saved}"
             if project is None:
-                return ("Error: the open project's file wasn't found under FL's Projects folder, "
-                        "so a save couldn't be confirmed; nothing was done")
+                return ("Error: the open project has no file under FL's Projects folder "
+                        "yet; give it a name to save it as")
             with keyboard_lock:
                 shop = save_project(project)
         except SaveError as e:
@@ -496,25 +536,4 @@ def register_automation_tools(mcp: FastMCP) -> None:
 
         Returns {"channel", "name", "start_bar", "length_bars", ...} or {"error"}.
         """
-        try:
-            target = _target(mixer_track, channel, parameter, slot)
-            beats_per_bar = call("project.getInfo").get("beats_per_bar", 4)
-            start_bar, converted = to_points(points, target["kind"], parameter, beats_per_bar)
-        except (ValueError, RuntimeError) as e:
-            return {"error": str(e)}
-        load = Load()
-        try:
-            with keyboard_lock:
-                result = create_automation(load, target, start_bar, converted, name,
-                                           beats_per_bar)
-        except (AutomationError, BrowserError, fl_channel_rack.ChannelRackError) as e:
-            fl_windows.close_popup_menus()
-            return {"error": " ".join(filter(None, [str(e), load.note()]))}
-        except Exception as e:  # e.g. Windows refusing a call: a tool answers, it doesn't raise
-            logger.exception("Creating automation failed unexpectedly")
-            fl_windows.close_popup_menus()
-            return {"error": f"Creating the automation failed: {e!r}."}
-        note = load.note()
-        if note:
-            result["warning"] = note
-        return result
+        return automate(points, mixer_track, channel, parameter, name, slot)

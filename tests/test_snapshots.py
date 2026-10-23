@@ -151,6 +151,17 @@ def test_apply_state_keeps_a_solo_and_a_default_track_name(controller, mix):
     assert mix.names[2] == "Insert 2"  # set as "" (FL's default name), not as a name
 
 
+def test_effects_only_leave_mutes_and_solos_alone(controller, mix):
+    mix.solo.add(1)
+    mix.muted.add(2)
+
+    controller.dispatch_command("project.applyState", {"tracks": [
+        {"index": 3, "effects": [{"slot": 0, "plugin": "Fruity Limiter", "params": [0.1]}]}]})
+
+    assert mix.solo == {1} and mix.muted == {2}
+    assert mix.effects[(3, 0)]["params"][0] == 0.1
+
+
 def test_apply_state_skips_an_effect_that_was_replaced(controller, mix):
     state = controller.dispatch_command("project.getSnapshot", {})
     mix.effects[(3, 0)]["name"] = "Fruity Reeverb 2"
@@ -341,3 +352,80 @@ def test_restoring_only_channels_leaves_mutes_and_solos_alone(controller, mix):
     controller.dispatch_command("project.applyState", {"tracks": [], "channels": state["channels"]})
 
     assert mix.solo == {3} and mix.muted == {1}
+
+
+# --- cleaning it up ----------------------------------------------------------------
+
+
+@pytest.fixture
+def clean(unused, monkeypatch, tmp_path):
+    """fl_clean_unused over the `unused` project, saved, with track 2 holding two effects."""
+    from fl_studio_mcp.project.reader import Arrangement, Clip, Project
+    from fl_studio_mcp.tools import browser, channel_setup
+
+    _, conn = unused
+    conn.results["mixer.getTrackEffects"] = {"effects": [{"slot": 0}, {"slot": 3}]}
+    file = tmp_path / "Song.flp"
+    file.write_bytes(b"")
+    clips = (Clip(0, 384, 1, 1, None), Clip(0, 384, 5, None, 2))
+    project = Project(96, ("Kick", "Pad", "Fade", "Rise"), {}, {}, (Arrangement("A", clips),),
+                      pattern_notes={1: 4, 2: 0, 3: 5})
+    monkeypatch.setattr(snapshots, "newest_project_file", lambda: file)
+    monkeypatch.setattr(snapshots, "parse", lambda data: data)
+    monkeypatch.setattr(snapshots, "read_project", lambda flp: project)
+    conn.results["project.getUndoHistory"] = {"unsaved_changes": False}
+    gone: dict[str, list] = {"effects": [], "channels": []}
+    monkeypatch.setattr(browser, "delete_effect", lambda t, s: gone["effects"].append(
+        (t, s)) or {"track": t, "slot": s, "deleted": "Fx"})
+    monkeypatch.setattr(channel_setup, "delete_channels", lambda c: gone["channels"].append(
+        c) or {"deleted": ["Rise"], "remaining": 3})
+    collector = ToolCollector()
+    snapshots.register_snapshot_tools(collector)
+    return collector.tools["fl_clean_unused"], conn, gone, project
+
+
+def test_clean_removes_what_find_unused_reports(clean):
+    tool, conn, gone, _ = clean
+
+    result = tool()
+
+    assert result["cleaned"] == {"mixer_tracks": [2], "patterns": [2], "channels": ["Rise"]}
+    assert gone == {"effects": [(2, 3), (2, 0)], "channels": [[3]]}  # last slot first
+    assert ("patterns.rename", {"index": 2, "name": ""}) in conn.sent
+    assert ("mixer.setTrackName", {"track": 2, "name": ""}) in conn.sent
+    # a pattern with notes but no clip may be a spare: only reported
+    assert result["left"] == {"patterns_not_in_playlist": [{"pattern": 3, "name": "Fill"}]}
+
+
+def test_clean_leaves_the_save_alone_while_it_is_out_of_date(clean):
+    tool, conn, gone, project = clean
+    conn.results["project.getUndoHistory"] = {"unsaved_changes": True}
+    project.pattern_notes[3] = 0  # would be empty by the save, but notes may be new
+
+    result = tool()
+
+    assert result["cleaned"]["channels"] == [] and gone["channels"] == []
+    assert result["cleaned"]["patterns"] == [2]  # length 0: empty without the save
+    assert "fl_save_project" in result["left"]["save"]
+
+
+def test_clean_reports_what_failed_and_goes_on(clean):
+    tool, conn, gone, _ = clean
+    conn.results["patterns.rename"] = {"error": "No pattern 2"}
+
+    result = tool(automation=False)
+
+    assert result["problems"] == ["pattern 2: No pattern 2"]
+    assert result["cleaned"] == {"mixer_tracks": [2], "patterns": [], "channels": []}
+    assert gone["channels"] == []
+
+
+def test_a_pattern_without_notes_in_the_save_is_empty_whatever_its_length(clean):
+    """Seen live: FL reports a bar's length for a pattern without notes."""
+    tool, conn, _, project = clean
+    project.pattern_notes[3] = 0
+
+    result = tool(mixer_tracks=False, automation=False)
+
+    assert result["cleaned"]["patterns"] == [2, 3]
+    assert "left" not in result  # the cleaned pattern isn't listed as a spare too

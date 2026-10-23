@@ -455,6 +455,14 @@ def test_render_chooses_nothing_in_a_submenu_that_is_not_exports(export):
     assert ENTER not in export.events and export.menus == 0
 
 
+def test_export_is_found_with_many_recent_projects(export, monkeypatch):
+    """Seen live: seven recent projects put Export's submenu just above the middle."""
+    menus = [(4, 0, 216, 447), (214, 222, 393, 580)]
+    monkeypatch.setattr(fl_render.fl_windows, "popup_menu_rects", lambda: menus)
+
+    assert fl_render._submenu_opened_low()
+
+
 def test_render_does_not_start_while_fl_shows_a_message_box(export):
     export.message = "FL Studio trial"
 

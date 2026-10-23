@@ -63,6 +63,18 @@ CLICK_INSET = 4
 # bar numbers, its lower one the time markers' labels. Seen live: a click on a
 # marker's label doesn't move the song position, so the bar numbers are clicked.
 RULER_ABOVE_GRID = 26
+# Below the scroll bar, the bar numbers' row starts. Seen live in a fresh template:
+# the ruler was only 20 px high, and grid_top - 26 hit the scroll bar, which paged
+# the view instead of moving the song position.
+RULER_INSET = 6
+MIN_RULER_HEIGHT = 10
+
+
+def _ruler_y(panel: PlaylistPanel) -> int:
+    """Where to click the time ruler: in its bar-number row."""
+    if panel.ruler_top is not None and panel.grid_top - panel.ruler_top >= MIN_RULER_HEIGHT:
+        return panel.ruler_top + RULER_INSET
+    return panel.grid_top - RULER_ABOVE_GRID
 SCROLL_TIMEOUT = 2.0  # seconds for the playlist to scroll to a bar
 # Reading a cell from the playlist's picture (seen live, FL 2026's default theme).
 EMPTY_BACKGROUNDS = ((52, 68, 78), (50, 66, 76))  # the clip area's empty rows (RGB)
@@ -373,7 +385,7 @@ def _aim(panel: PlaylistPanel, bar: int, bar_ticks: int) -> int:
     x = panel.grid_left + CLICK_INSET
     deadline = time.monotonic() + SCROLL_TIMEOUT
     while True:
-        _click(panel, x, panel.grid_top - RULER_ABOVE_GRID)
+        _click(panel, x, _ruler_y(panel))
         if _fl("playlist.getSongPosition")["ticks"] == (bar - 1) * bar_ticks:
             return x
         if time.monotonic() >= deadline:

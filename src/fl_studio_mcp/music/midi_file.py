@@ -97,3 +97,121 @@ def write_midi(path: Path, tracks: list[dict], bpm: float, beats_per_bar: int = 
     path.write_bytes(data)
     return {"path": str(path), "tracks": len(tracks),
             "notes": sum(len(t.get("notes", [])) for t in tracks)}
+
+
+# --- Reading ----------------------------------------------------------------------------
+
+DEFAULT_BPM = 120.0
+# Data bytes after a channel message's status, by its high nibble.
+_DATA_BYTES = {0x8: 2, 0x9: 2, 0xA: 2, 0xB: 2, 0xC: 1, 0xD: 1, 0xE: 2}
+
+
+def _read_vlq(data: bytes, position: int) -> tuple[int, int]:
+    value = 0
+    for _ in range(4):
+        if position >= len(data):
+            raise ValueError("The MIDI file ends in the middle of an event")
+        byte = data[position]
+        position += 1
+        value = (value << 7) | (byte & 0x7F)
+        if not byte & 0x80:
+            return value, position
+    raise ValueError("The MIDI file has a broken length")
+
+
+def _chunks_of(data: bytes) -> list[tuple[bytes, bytes]]:
+    chunks = []
+    position = 0
+    while position + 8 <= len(data):
+        kind = data[position:position + 4]
+        size = struct.unpack(">I", data[position + 4:position + 8])[0]
+        body = data[position + 8:position + 8 + size]
+        if len(body) < size:
+            raise ValueError("The MIDI file is cut off")
+        chunks.append((kind, body))
+        position += 8 + size
+    return chunks
+
+
+def _events(body: bytes):
+    """(tick, status, data bytes) of a track's channel and meta events (meta: status 0xFF)."""
+    position, tick, running = 0, 0, None
+    while position < len(body):
+        delta, position = _read_vlq(body, position)
+        tick += delta
+        if position >= len(body):
+            raise ValueError("The MIDI file ends in the middle of an event")
+        status = body[position]
+        if status == 0xFF:
+            kind = body[position + 1] if position + 1 < len(body) else 0
+            size, position = _read_vlq(body, position + 2)
+            yield tick, 0xFF, bytes([kind]) + body[position:position + size]
+            position += size
+            continue
+        if status in (0xF0, 0xF7):  # sysex: skipped
+            size, position = _read_vlq(body, position + 1)
+            position += size
+            continue
+        if status & 0x80:
+            running = status
+            position += 1
+        elif running is None:
+            raise ValueError("The MIDI file has data without a status byte")
+        count = _DATA_BYTES.get(running >> 4, 0)
+        if position + count > len(body):
+            raise ValueError("The MIDI file ends in the middle of an event")
+        yield tick, running, body[position:position + count]
+        position += count
+
+
+def parse_midi(data: bytes) -> dict:
+    """A standard MIDI file's notes, per track and MIDI channel, in fl_send_notes format.
+
+    Returns {"ppq", "bpm" (the first tempo), "beats_per_bar", "tracks": [{"name",
+    "channel", "drums", "notes": [{"midi", "time", "duration", "velocity"}]}]}
+    with times in beats. Raises ValueError for anything that isn't a MIDI file.
+    """
+    chunks = _chunks_of(data)
+    if not chunks or chunks[0][0] != b"MThd" or len(chunks[0][1]) < 6:
+        raise ValueError("Not a standard MIDI file")
+    _, _, division = struct.unpack(">HHh", chunks[0][1][:6])
+    if division <= 0:
+        raise ValueError("MIDI files timed in SMPTE frames aren't supported")
+    bpm, beats_per_bar, tracks = None, 4, []
+    for number, (kind, body) in enumerate(c for c in chunks[1:] if c[0] == b"MTrk"):
+        name = f"Track {number + 1}"
+        sounding: dict[tuple[int, int], list[tuple[int, int]]] = {}
+        notes: dict[int, list[dict]] = {}
+        for tick, status, payload in _events(body):
+            if status == 0xFF:
+                meta, content = payload[0], payload[1:]
+                if meta == 0x03 and content:
+                    name = content.decode("utf-8", "replace")
+                elif meta == 0x51 and len(content) == 3 and bpm is None:
+                    bpm = 60_000_000 / int.from_bytes(content, "big")
+                elif meta == 0x58 and content:
+                    beats_per_bar = content[0]
+                continue
+            channel, message = status & 0x0F, status >> 4
+            if message not in (0x8, 0x9):
+                continue
+            pitch, velocity = payload[0], payload[1]
+            if message == 0x9 and velocity > 0:
+                sounding.setdefault((channel, pitch), []).append((tick, velocity))
+            elif sounding.get((channel, pitch)):
+                start, velocity = sounding[(channel, pitch)].pop(0)
+                notes.setdefault(channel, []).append({
+                    "midi": pitch, "time": round(start / division, 6),
+                    "duration": round((tick - start) / division, 6),
+                    "velocity": round(velocity / 127, 4),
+                })
+        for channel in sorted(notes):
+            tracks.append({"name": name, "channel": channel, "drums": channel == DRUM_CHANNEL,
+                           "notes": sorted(notes[channel], key=lambda n: (n["time"], n["midi"]))})
+    return {"ppq": division, "bpm": round(bpm or DEFAULT_BPM, 3),
+            "beats_per_bar": beats_per_bar, "tracks": tracks}
+
+
+def read_midi(path: Path) -> dict:
+    """parse_midi of a file. Raises ValueError or OSError."""
+    return parse_midi(Path(path).read_bytes())
